@@ -302,6 +302,12 @@ function dk_calendar_render_settings_tab() {
         echo '<div class="notice notice-success is-dismissible"><p><strong>Data sync completed!</strong> Check your course calendar data now.</p></div>';
     }
 
+    // Check for reschedule success
+    if ( isset( $_GET['reschedule_status'] ) && $_GET['reschedule_status'] == 'success' ) {
+        $res_ts = isset( $_GET['reschedule_ts'] ) ? sanitize_text_field( $_GET['reschedule_ts'] ) : '';
+        echo '<div class="notice notice-success is-dismissible"><p><strong>Nightly sync rescheduled.</strong> Next run: ' . esc_html( $res_ts ) . '.</p></div>';
+    }
+
     // Retrieve last sync timestamp
     $last_sync_timestamp = get_option( 'dk_last_full_sync' );
     $last_sync_message = 'Never run.';
@@ -328,6 +334,30 @@ function dk_calendar_render_settings_tab() {
         submit_button( 'Save Settings' );
         ?>
     </form>
+    <?php
+    // --- CRON DIAGNOSTICS ---
+    $next_sched = wp_next_scheduled( 'dk_calendar_nightly_sync' );
+    $cron_disabled = defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
+
+    echo '<h3>Cron Diagnostics</h3>';
+    if ( $cron_disabled ) {
+        echo '<p style="color:orange;"><strong>WP-Cron is disabled (DISABLE_WP_CRON = true).</strong> Scheduled events will not run automatically.</p>';
+    }
+
+    if ( $next_sched ) {
+        echo '<p>Next scheduled DK nightly sync: ' . esc_html( date( 'Y-m-d H:i:s', $next_sched ) ) . ' (server time)</p>';
+    } else {
+        echo '<p style="color:red;"><strong>No scheduled DK nightly sync event found.</strong> The nightly sync will not run unless triggered manually.</p>';
+    }
+
+    echo '<p>To test now: click the <em>Run Full Data Sync Now</em> button below or run via WP-CLI: <code>wp cron event run --due-now dk_calendar_nightly_sync</code></p>';
+    // --- END CRON DIAGNOSTICS ---
+    ?>
+    <?php
+    // Reschedule button (schedules next run at next midnight)
+    $reschedule_url = wp_nonce_url( admin_url( 'admin.php?action=dk_reschedule_nightly_sync' ), 'dk_reschedule_nightly_sync_action' );
+    echo '<p><a href="' . esc_url( $reschedule_url ) . '" class="button">Schedule nightly sync for next midnight</a></p>';
+    ?>
     
     <hr/>
     
@@ -963,4 +993,46 @@ function dk_calendar_ajax_render() {
     ) );
     
     wp_die();
+}
+
+// Admin action: reschedule the nightly sync to the next midnight
+add_action( 'admin_action_dk_reschedule_nightly_sync', 'dk_handle_reschedule_nightly_sync' );
+
+function dk_handle_reschedule_nightly_sync() {
+    // Security and capability checks
+    if ( ! current_user_can( 'manage_options' ) || ! isset( $_GET['_wpnonce'] ) || ! wp_verify_nonce( $_GET['_wpnonce'], 'dk_reschedule_nightly_sync_action' ) ) {
+        wp_die( 'Security check failed.' );
+    }
+
+    // Clear any existing scheduled occurrences for this hook
+    if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
+        wp_clear_scheduled_hook( 'dk_calendar_nightly_sync' );
+    } else {
+        // Fallback: try to unschedule next occurrence
+        $ts = wp_next_scheduled( 'dk_calendar_nightly_sync' );
+        if ( $ts ) {
+            wp_unschedule_event( $ts, 'dk_calendar_nightly_sync' );
+        }
+    }
+
+    // Determine next midnight (server/site timezone aware using WP current_time)
+    $now = current_time( 'timestamp' );
+    $next_midnight = strtotime( 'tomorrow midnight', $now );
+    if ( $next_midnight <= $now ) {
+        $next_midnight = $next_midnight + DAY_IN_SECONDS;
+    }
+
+    // Schedule a daily event starting at next midnight
+    wp_schedule_event( $next_midnight, 'daily', 'dk_calendar_nightly_sync' );
+
+    // Redirect back to settings with a success message
+    $redirect_url = add_query_arg( array(
+        'page' => 'dk-course-calendar',
+        'tab' => 'settings',
+        'reschedule_status' => 'success',
+        'reschedule_ts' => date( 'Y-m-d H:i:s', $next_midnight )
+    ), admin_url( 'admin.php' ) );
+
+    wp_safe_redirect( $redirect_url );
+    exit;
 }
