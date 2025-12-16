@@ -84,25 +84,29 @@ jQuery(document).ready(function($) {
     function renderSingleFlow(showPayeeAsStudent, isBookForMyself) {
         $('#dk-step-1-initial-view, #dk-step-1-group-setup').hide();
         $('#dk-step-1-form-view').show();
-        $('#dk-form-view-title').text(isBookForMyself ? 'Your Details (Student)' : (showPayeeAsStudent ? 'Your Details (Booking Contact)' : 'Booking'));
-        const $container = $('#dk-student-forms-container').empty();
+        // Immediate title to reduce perceived latency
+        $('#dk-form-view-title').text(isBookForMyself ? 'Book for Myself' : (showPayeeAsStudent ? 'Your Details (Booking Contact)' : 'Booking'));
+        const $container = $('#dk-student-forms-container');
+
+        // Show loading placeholder while AJAX form is requested
+        $container.html('<p class="dk-loading">Loading Details Forms...</p>');
 
         if (isBookForMyself) {
             // Request student form only, no add button
             requestForm(0, 'student', 'Your Details (Student)', state.students[0] || {}, false, false).done(function(r) {
-                $container.append(r.data.html);
-            });
+                $container.empty().append(r.data.html);
+            }).fail(function(){ $container.html('<p class="dk-loading">Failed to load form. Please try again.</p>'); });
             $('#dk-add-new-student-btn').hide();
         } else {
             // Booking contact + student
             // First: booking contact (payee)
             requestForm(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false).done(function(r) {
-                $container.append(r.data.html);
+                $container.empty().append(r.data.html);
                 // then student
                 requestForm(1, 'student', 'Student Details', state.students[0] || {}, false, true).done(function(r2) {
                     $container.append(r2.data.html);
-                });
-            });
+                }).fail(function(){ $container.append('<p class="dk-loading">Failed to load student form.</p>'); });
+            }).fail(function(){ $container.html('<p class="dk-loading">Failed to load forms. Please try again.</p>'); });
             $('#dk-add-new-student-btn').hide();
         }
     }

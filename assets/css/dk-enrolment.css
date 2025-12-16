@@ -265,6 +265,13 @@
     margin: 0 10px;
 }
 
+/* Loading placeholder for forms */
+.dk-loading {
+    font-style: italic;
+    color: #666;
+    margin: 15px 0;
+}
+
 /* --- STEP 2 PAYMENT SUMMARY STYLES --- */
 .dk-summary-section {
     margin-bottom: 30px;
