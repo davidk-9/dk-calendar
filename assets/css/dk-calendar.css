@@ -1,0 +1,271 @@
+/* ==============================================
+   CORE LAYOUT STYLES
+   ============================================== */
+
+#dk-calendar-ajax-container {
+    max-width: 1200px; 
+    margin: 30px auto;
+    font-family: sans-serif;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 15px;
+    background: #f9f9f9;
+}
+
+.dk-loading-spinner-wrapper {
+    text-align: center;
+    padding: 50px 0;
+}
+
+.dk-spinner {
+    border: 5px solid #f3f3f3;
+    border-top: 5px solid #cd2996; /* Pink spinner */
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 10px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.dk-calendar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.dk-calendar-header h2 {
+    margin: 0;
+    font-size: 1.8em;
+}
+
+.dk-nav-btn {
+    text-decoration: none;
+    color: #0073aa;
+    font-weight: bold;
+    padding: 5px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+/* --- Calendar Grid Layout --- */
+.dk-calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    border-left: 1px solid #ccc;
+    border-top: 1px solid #ccc;
+}
+
+.dk-day-name {
+    background-color: #eee;
+    text-align: center;
+    padding: 10px 0;
+    font-weight: bold;
+    border-right: 1px solid #ccc;
+    border-bottom: 1px solid #ccc;
+}
+
+.dk-day {
+    min-height: 100px;
+    padding: 5px;
+    border-right: 1px solid #ccc;
+    border-bottom: 1px solid #ccc;
+    transition: background-color 0.2s, color 0.2s;
+    cursor: default;
+    background-color: #fff;
+    position: relative;
+}
+
+.dk-date-number {
+    font-size: 1.4em;
+    font-weight: bold;
+    color: #333; 
+}
+
+/* --- THEME STYLING (Pink: #cd2996) --- */
+
+/* Unavailable Day (Light Gray) */
+.dk-empty, .dk-has-courses:empty, .dk-day:not(.dk-has-courses) {
+    background-color: #f0f0f0; 
+    cursor: default;
+}
+
+.dk-day:not(.dk-has-courses) .dk-date-number {
+    color: #888; /* Darker gray day number */
+}
+
+/* Available Day (Pink Day Number) */
+.dk-has-courses {
+    cursor: pointer;
+    background-color: #fff; 
+}
+
+.dk-has-courses:hover {
+    background-color: #f5f5f5; 
+}
+
+.dk-has-courses .dk-date-number {
+    color: #cd2996; /* Pink color for the day number */
+}
+
+/* Selected Day (Pink Background) */
+.dk-active {
+    background-color: #cd2996 !important; 
+}
+
+.dk-active .dk-date-number {
+    color: white !important; /* White text for date number */
+}
+
+/* Course count is permanently removed */
+.dk-course-count {
+    display: none !important; 
+}
+
+/* Course Details Table */
+#dk-course-details {
+    margin-top: 20px;
+    padding: 15px;
+    border-top: 2px solid #cd2996;
+    background: #fff;
+    box-sizing: border-box; 
+}
+
+/* --- TABLE STYLING (General) --- */
+.dk-course-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.dk-course-table th, .dk-course-table td {
+    padding: 10px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.dk-course-table th {
+    background-color: #f0f0f0;
+}
+
+.dk-enrol-btn {
+    display: inline-block;
+    background-color: #28a745;
+    color: white !important;
+    text-decoration: none;
+    padding: 8px 15px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    font-weight: normal;
+    text-align: center;
+}
+
+/* ==============================================
+   LAYOUT 1: COMPACT VIEW (Desktop Only)
+   ============================================== */
+
+@media screen and (min-width: 768px) {
+    .dk-layout-compact .dk-content-container {
+        display: grid;
+        grid-template-columns: 40% 60%; 
+        gap: 20px;
+    }
+    
+    .dk-layout-compact .dk-calendar-grid {
+        width: 100%;
+        min-width: auto;
+    }
+
+    .dk-layout-compact #dk-course-details {
+        display: block !important; 
+        margin-top: 0;
+        min-height: 400px;
+    }
+}
+
+/* ==============================================
+   MOBILE STYLES (Screen width <= 767px) - FLUID LAYOUT
+   ============================================== */
+
+@media screen and (max-width: 767px) {
+    /* --- 1. Calendar Grid Scaling (Fluid, no scroll) --- */
+    .dk-calendar-grid {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr); 
+        overflow-x: hidden; 
+        min-width: auto; 
+        white-space: normal;
+    }
+    
+    .dk-day {
+        min-height: 60px; 
+        font-size: 0.8em;
+        padding: 3px;
+    }
+
+    /* --- 2. COURSE DETAILS TABLE FIX (Vertical Stack) --- */
+    .dk-course-table {
+        border: 0;
+        margin-top: 15px;
+    }
+
+    .dk-course-table thead {
+        display: none; 
+    }
+
+    .dk-course-table, .dk-course-table tbody, .dk-course-table tr, .dk-course-table td {
+        display: block;
+        width: 100%;
+    }
+    
+    .dk-course-table tr {
+        margin-bottom: 10px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+    }
+    
+    .dk-course-table td {
+        border-bottom: 1px solid #eee;
+        text-align: right;
+        padding-left: 50%; 
+        position: relative;
+        font-size: 0.9em;
+    }
+
+    .dk-course-table td:last-child {
+        border-bottom: 0;
+    }
+
+    .dk-course-table td::before {
+        content: attr(data-label);
+        position: absolute;
+        left: 6px;
+        width: 45%;
+        text-align: left;
+        font-weight: bold;
+    }
+
+    /* --- 3. Floating Scroll Button Style --- */
+    .dk-floating-btn {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        width: 45px;
+        height: 45px;
+        background-color: #cd2996; 
+        color: white;
+        border: none;
+        border-radius: 50%;
+        font-size: 1.8em;
+        line-height: 45px;
+        text-align: center;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+        z-index: 1000; 
+    }
+}

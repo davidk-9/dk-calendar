@@ -1,0 +1,31 @@
+.vscode/
+# Editor directories and files
+*.code-workspace
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Node / Composer
+node_modules/
+vendor/
+
+# Environment files
+.env
+
+# PHPStorm / JetBrains
+.idea/
+
+# Logs and temporary
+*.log
+npm-debug.log*
+
+# PHP / WordPress common
+wp-content/uploads/
+
+# Backup files
+*.bak
+*.tmp
+
+# Ignore VS Code history/extensions settings
+.history/
