@@ -281,4 +281,81 @@ jQuery(document).ready(function($) {
         $('#dk-add-new-student-btn').toggle( (state.students.length>1) );
         renderFormsForBooking(payeeIsStudent);
     }
+
+    // --- Navigation: goToStep and Step 2 renderer ---
+    function goToStep(step) {
+        if (step < 1 || step > 3) return;
+        // Hide all step contents and clear active tabs
+        $('.dk-step-content').hide();
+        $('.dk-tab-item').removeClass('dk-active-tab');
+
+        // Show selected content and mark tab active
+        $(`#dk-step-${step}`).show();
+        $(`.dk-tab-item.dk-step-${step}`).addClass('dk-active-tab');
+
+        if (step === 2) {
+            renderStep2();
+        }
+    }
+
+    function renderStep2() {
+        const $step2 = $('#dk-step-2').empty();
+        let html = '';
+
+        // Payee summary
+        const payee = state.payee || (state.students && state.students.length ? state.students[0] : null);
+        html += '<div class="dk-summary-section">';
+        html += '<h3>Payee Details</h3>';
+        html += '<div class="dk-title-line"></div>';
+        if (payee) {
+            html += '<ul class="dk-student-summary-list">';
+            html += '<li><span>First Name:</span><span>' + (payee.given_name||'') + '</span></li>';
+            html += '<li><span>Last Name:</span><span>' + (payee.last_name||'') + '</span></li>';
+            html += '<li><span>Email:</span><span>' + (payee.email||'') + '</span></li>';
+            html += '<li><span>Mobile:</span><span>' + (payee.mobile||'') + '</span></li>';
+            html += '</ul>';
+        } else {
+            html += '<p>No payee details saved.</p>';
+        }
+        html += '</div>';
+
+        // Students summary
+        html += '<div class="dk-summary-section">';
+        html += '<h3>Student Details</h3>';
+        html += '<div class="dk-title-line"></div>';
+        if (state.students && state.students.length) {
+            state.students.forEach(function(student, idx) {
+                const num = idx + 1;
+                html += '<div class="dk-summary-student-item">';
+                html += '<div class="dk-student-details-row"><h4>Student ' + num + '</h4><a href="#" class="dk-edit-student-link" data-index="' + idx + '">&lt;&lt; Edit Student Details</a></div>';
+                html += '<ul class="dk-student-summary-list">';
+                html += '<li><span>First Name:</span><span>' + (student.given_name||'') + '</span></li>';
+                html += '<li><span>Last Name:</span><span>' + (student.last_name||'') + '</span></li>';
+                html += '<li><span>Email:</span><span>' + (student.email||'') + '</span></li>';
+                html += '<li><span>Mobile:</span><span>' + (student.mobile||'') + '</span></li>';
+                html += '<li class="dk-student-fee"><span>Fee:</span><span>$' + COURSE_COST_RAW.toFixed(2) + '</span></li>';
+                html += '</ul>';
+                html += '</div>';
+            });
+        } else {
+            html += '<p>No students added yet.</p>';
+        }
+        html += '</div>';
+
+        // Totals and actions
+        const total = ((state.students && state.students.length) ? state.students.length : 0) * COURSE_COST_RAW;
+        html += '<h3 class="dk-summary-total">Total Fee: $' + total.toFixed(2) + '</h3>';
+
+        // Pay button placeholder
+        html += '<div class="dk-button-group dk-nav-buttons" style="margin-top:20px;">';
+        html += '<button id="dk-back-to-details-btn" class="dk-btn dk-btn-secondary dk-btn-50"><< Go Back</button>';
+        html += '<button id="dk-pay-now-btn" class="dk-btn dk-btn-primary dk-btn-50">Pay Now</button>';
+        html += '</div>';
+
+        $step2.append(html);
+
+        // Attach handlers
+        $('#dk-back-to-details-btn').on('click', function(){ goToStep(1); });
+        $('#dk-pay-now-btn').on('click', function(){ alert('Pay Now clicked. Final API batch process starts here.'); });
+    }
 });
