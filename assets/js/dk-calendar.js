@@ -49,7 +49,11 @@ jQuery(document).ready(function($) {
     // --- 2. AJAX Calendar Loader ---
     function loadCalendarContent() {
         const $container = $('#dk-calendar-ajax-container');
-        const layout = $container.attr('class').match(/dk-layout-(\w+)/)[1];
+        // Guard: if no calendar container on page (e.g. enrolment shortcode only), exit safely
+        if ( $container.length === 0 ) return;
+        const containerClass = $container.attr('class') || '';
+        const layoutMatch = containerClass.match(/dk-layout-(\w+)/);
+        const layout = layoutMatch ? layoutMatch[1] : 'default';
         
         $container.find('.dk-loading-spinner-wrapper').show();
         $container.find('#dk-calendar-content').remove();
