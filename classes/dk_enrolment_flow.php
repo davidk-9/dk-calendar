@@ -4,14 +4,17 @@
 defined('ABSPATH') or die('No script kiddies please!');
 
 /**
- * Renders the HTML template for a single Student Form iteration.
- * * @param int $index The student number (0, 1, 2, etc.)
+ * Renders the HTML template for a single form iteration.
+ * Supports form types: 'student' (includes agreements) and 'payee'/'booking_contact' (no agreements).
+ * @param int $index The form number (0, 1, 2, etc.)
  * @param array $student_data Existing data to pre-fill the form
  * @param bool $is_locked Flag to disable fields after saving
  * @param bool $show_delete Flag to show the delete button
+ * @param string $form_type 'student'|'payee'|'booking_contact'
+ * @param string|null $title Optional title to display instead of default
  * @return string HTML
  */
-function dk_render_student_form( $index, $student_data = [], $is_locked = false, $show_delete = false ) {
+function dk_render_student_form( $index, $student_data = [], $is_locked = false, $show_delete = false, $form_type = 'student', $title = null ) {
     // Sanitize data defensively
     $student_data = array_map('sanitize_text_field', $student_data);
 
@@ -23,15 +26,27 @@ function dk_render_student_form( $index, $student_data = [], $is_locked = false,
     $last_name = esc_attr($student_data['last_name'] ?? '');
     $email = esc_attr($student_data['email'] ?? '');
     $mobile = esc_attr($student_data['mobile'] ?? '');
-    // Checkbox values require boolean check
+    // Checkbox values require boolean check (only for student forms)
     $agreement_1 = isset($student_data['agreement_1']) && (bool)$student_data['agreement_1'] ? 'checked' : '';
     $agreement_2 = isset($student_data['agreement_2']) && (bool)$student_data['agreement_2'] ? 'checked' : '';
     
     ob_start();
     ?>
-    <div class="dk-student-form-block" data-index="<?php echo $index; ?>" data-is-locked="<?php echo $is_locked ? 'true' : 'false'; ?>">
+    <div class="dk-student-form-block" data-index="<?php echo $index; ?>" data-is-locked="<?php echo $is_locked ? 'true' : 'false'; ?>" data-form-type="<?php echo esc_attr($form_type); ?>">
         <div class="dk-form-header">
-            <h3 class="dk-student-title">Student <?php echo $student_num; ?></h3>
+            <h3 class="dk-student-title">
+                <?php
+                if ( $title ) {
+                    echo esc_html( $title );
+                } else {
+                    if ( $form_type === 'payee' || $form_type === 'booking_contact' ) {
+                        echo 'Your Details';
+                    } else {
+                        echo 'Student ' . $student_num;
+                    }
+                }
+                ?>
+            </h3>
             <?php if ($show_delete) : ?>
                 <button type="button" class="dk-btn dk-btn-delete dk-delete-student-btn" data-index="<?php echo $index; ?>">Delete Student</button>
             <?php endif; ?>
@@ -58,6 +73,7 @@ function dk_render_student_form( $index, $student_data = [], $is_locked = false,
             </div>
 
             <div class="dk-form-section dk-one-column-layout">
+                <?php if ( $form_type === 'student' ) : ?>
                 <div class="dk-checkbox-field">
                     <input type="checkbox" id="dk_agreement_1_<?php echo $index; ?>" name="agreement_1" value="1" <?php echo $agreement_1; ?> <?php echo $disabled; ?> required>
                     <label for="dk_agreement_1_<?php echo $index; ?>">I understand the online learning and assessment component of the course must be completed before I can attend my scheduled in person session.</label>
@@ -66,6 +82,7 @@ function dk_render_student_form( $index, $student_data = [], $is_locked = false,
                     <input type="checkbox" id="dk_agreement_2_<?php echo $index; ?>" name="agreement_2" value="1" <?php echo $agreement_2; ?> <?php echo $disabled; ?> required>
                     <label for="dk_agreement_2_<?php echo $index; ?>">I am physically able to perform CPR in a kneeling position on the floor for 2 minutes.</label>
                 </div>
+                <?php endif; ?>
             </div>
         </form>
     </div>
@@ -87,9 +104,11 @@ function dk_ajax_render_student_form_html() {
     $student_data = array_map('wp_kses_post', wp_unslash($_POST['student_data'] ?? []));
     $is_locked = filter_var($_POST['is_locked'] ?? false, FILTER_VALIDATE_BOOLEAN);
     $show_delete = filter_var($_POST['show_delete'] ?? false, FILTER_VALIDATE_BOOLEAN);
-    
+    $form_type = sanitize_text_field( $_POST['form_type'] ?? 'student' );
+    $title = isset( $_POST['title'] ) ? sanitize_text_field( $_POST['title'] ) : null;
+
     // Render the form using the PHP function
-    $html = dk_render_student_form($index, $student_data, $is_locked, $show_delete);
+    $html = dk_render_student_form($index, $student_data, $is_locked, $show_delete, $form_type, $title);
     
     wp_send_json_success(['html' => $html]);
     wp_die();
@@ -154,23 +173,52 @@ function dk_enrolment_flow_shortcode_output( $atts ) {
                     <div id="dk-step-1-initial-view">
                         <h2 class="dk-content-title">Student Details</h2>
                         <div class="dk-title-line"></div>
-                        
+
                         <div class="dk-button-group dk-initial-buttons">
-                            <button id="dk-book-myself-btn" class="dk-btn dk-btn-primary dk-btn-50">Book for myself +</button>
-                            <button id="dk-book-someone-btn" class="dk-btn dk-btn-primary dk-btn-50">Book for someone else +</button>
+                            <button id="dk-book-myself-btn" class="dk-btn dk-btn-primary dk-btn-50">Book For Myself</button>
+                            <button id="dk-book-someone-btn" class="dk-btn dk-btn-primary dk-btn-50">Book For Someone Else</button>
+                            <button id="dk-book-group-btn" class="dk-btn dk-btn-primary dk-btn-50">Book For a Group (2+)</button>
                         </div>
                     </div>
-                    
+
+                    <div id="dk-step-1-group-setup" style="display:none;">
+                        <h2 class="dk-content-title">Group Booking Setup</h2>
+                        <div class="dk-title-line"></div>
+
+                        <div class="dk-form-section dk-two-column-layout">
+                            <div class="dk-form-field">
+                                <label for="dk_group_count">How many students will be in your group</label>
+                                <div class="dk-number-control">
+                                    <button type="button" id="dk_group_count_decr" class="dk-num-btn">-</button>
+                                    <input type="number" id="dk_group_count" value="2" min="2" style="width:4em;text-align:center;" />
+                                    <button type="button" id="dk_group_count_incr" class="dk-num-btn">+</button>
+                                </div>
+                            </div>
+                            <div class="dk-form-field">
+                                <label>Are you part of the group of students?</label>
+                                <div>
+                                    <label><input type="radio" name="dk_group_member_toggle" value="yes" checked /> Yes</label>
+                                    <label style="margin-left:1em;"><input type="radio" name="dk_group_member_toggle" value="no" /> No</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="dk-button-group dk-nav-buttons" style="margin-top:1em;">
+                            <button id="dk-group-go-back-btn" class="dk-btn dk-btn-secondary">&lt;&lt; Go Back</button>
+                            <button id="dk-group-continue-btn" class="dk-btn dk-btn-primary">Continue</button>
+                        </div>
+                    </div>
+
                     <div id="dk-step-1-form-view" style="display:none;">
                         <h2 class="dk-content-title" id="dk-form-view-title">Book for Myself</h2>
                         <div class="dk-title-line"></div>
-                        
+
                         <div id="dk-student-forms-container">
                             </div>
 
                         <div class="dk-form-footer">
                             <button id="dk-add-new-student-btn" class="dk-btn dk-btn-secondary dk-add-student-btn" style="display:none;">Add New Student +</button>
-                            
+
                             <div class="dk-button-group dk-nav-buttons">
                                 <button id="dk-go-back-btn" class="dk-btn dk-btn-primary dk-btn-50">&lt;&lt; Go Back</button>
                                 <button id="dk-save-details-btn" class="dk-btn dk-btn-primary dk-btn-50">Save Details</button>

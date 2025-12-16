@@ -2,425 +2,283 @@
 
 jQuery(document).ready(function($) {
     const $wrapper = $('#dk-enrolment-wrapper');
-    if (!$wrapper.length || typeof DKEnrolmentData === 'undefined') {
-        return;
-    }
+    if (!$wrapper.length || typeof DKEnrolmentData === 'undefined') return;
 
     // --- Core Data and State Management ---
-    const STORAGE_KEY = 'dk_enrolment_students';
-    const COURSE_COST_RAW = parseFloat($('#dk-step-1').data('instance-cost'));
-    const SPACES_AVAIL = parseInt($('#dk-step-1').data('spaces-avail'));
+    const STORAGE_KEY = 'dk_enrolment_state';
+    const COURSE_COST_RAW = parseFloat($('#dk-step-1').data('instance-cost')) || 0;
+    const SPACES_AVAIL = parseInt($('#dk-step-1').data('spaces-avail')) || 999;
     const INSTANCE_ID = $('#dk-step-1').data('instance-id');
-    const COURSE_TYPE = $('#dk-step-1').data('course-type');
-    
-    let currentStudents = loadStudents(); 
-    let activeStep = 1;
-    let currentFormIndex = currentStudents.length > 0 ? currentStudents.length - 1 : 0;
-    
-    // --- 1. Helper Functions ---
 
-    // Load student data from session storage (handles refresh/back navigation)
-    function loadStudents() {
+    // State shape: { payee: {...} | null, students: [ {...}, ... ] }
+    let state = loadState();
+
+    function loadState() {
         try {
-            return JSON.parse(sessionStorage.getItem(STORAGE_KEY)) || [];
+            return JSON.parse(sessionStorage.getItem(STORAGE_KEY)) || { payee: null, students: [] };
         } catch (e) {
-            console.error("Error loading student data from storage:", e);
-            return [];
+            return { payee: null, students: [] };
         }
+    }
+    function saveState() {
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     }
 
-    // Save student data to session storage
-    function saveStudents() {
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(currentStudents));
+    function clearState() {
+        state = { payee: null, students: [] };
+        saveState();
     }
-    
-    // Validate a single student form
-    function validateForm(formData) {
-        // Simple check for required fields being non-empty
-        if (!formData.given_name || !formData.last_name || !formData.email || !formData.mobile) {
-            return false;
-        }
-        // Check for required agreement checkboxes
-        if (!formData.agreement_1 || !formData.agreement_2) {
-            return false;
-        }
-        // Basic email validation
+
+    // Validate functions (all fields mandatory; students require agreements)
+    function validatePerson(data, isStudent) {
+        if (!data) return false;
+        if (!data.given_name || !data.last_name || !data.email || !data.mobile) return false;
         const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailPattern.test(formData.email)) {
-            return false;
+        if (!emailPattern.test(data.email)) return false;
+        if (isStudent) {
+            if (!data.agreement_1 || !data.agreement_2) return false;
         }
         return true;
     }
 
-    // Displays a dynamic modal/warning popup
-    function showConfirmation(message, onYes, onNo) {
-        const $modal = $('<div class="dk-modal-overlay"></div>');
-        const $content = $(`
-            <div class="dk-modal-content">
-                <p>${message}</p>
-                <div class="dk-button-group">
-                    <button class="dk-btn dk-btn-primary dk-confirm-yes">Yes</button>
-                    <button class="dk-btn dk-btn-secondary dk-confirm-no">No</button>
-                </div>
-            </div>
-        `);
-        
-        $content.find('.dk-confirm-yes').on('click', function() { $modal.remove(); onYes(); });
-        $content.find('.dk-confirm-no').on('click', function() { $modal.remove(); onNo(); });
-        
-        $modal.append($content);
-        $('body').append($modal);
-    }
-
-    // --- 2. Flow and UI Handlers (Step 1) ---
-
-    // Handles locking the current form, saving data, and adding a new form
-    function processAndAddStudent(isFinalSave = false) {
-        const $currentForm = $(`#dk-student-forms-container form`).eq(currentFormIndex);
-        const $formBlock = $currentForm.closest('.dk-student-form-block');
-        
-        // Serialize form data
-        const formDataArray = $currentForm.serializeArray();
-        let formData = {};
-        formDataArray.forEach(item => {
-            if (item.name.startsWith('agreement')) {
-                // Handle checkboxes (only present if checked)
-                formData[item.name] = true;
-            } else {
-                formData[item.name] = item.value;
-            }
-        });
-
-        // Add unchecked agreement fields back as false for consistent state
-        if (!formData.agreement_1) formData.agreement_1 = false;
-        if (!formData.agreement_2) formData.agreement_2 = false;
-
-        // Validation
-        if (!validateForm(formData)) {
-            $('#dk-validation-message').text(DKEnrolmentData.messages.validation_error).fadeIn();
-            $currentForm.find('input:invalid').first().focus();
-            return false;
-        }
-        $('#dk-validation-message').fadeOut();
-
-        // 1. Save data for current student
-        currentStudents[currentFormIndex] = formData;
-        
-        // Ensure no placeholder blank form data is saved if user hits Save/Yes immediately
-        currentStudents = currentStudents.filter(s => s && s.given_name); 
-
-        saveStudents();
-        
-        // 2. Lock form fields (simulated by disabling inputs)
-        $formBlock.attr('data-is-locked', 'true').find('input').prop('disabled', true);
-        
-        // 3. Add Delete button to the now-locked form (if not the first student)
-        if (currentFormIndex > 0 && $formBlock.find('.dk-delete-student-btn').length === 0) {
-            $formBlock.find('.dk-form-header').append(`
-                <button type="button" class="dk-btn dk-btn-delete dk-delete-student-btn" data-index="${currentFormIndex}">Delete Student</button>
-            `);
-        }
-
-        if (isFinalSave) {
-            // Final save triggers confirmation
-            showConfirmation(
-                DKEnrolmentData.messages.final_check,
-                // YES: Proceed to Payment
-                function() { 
-                    goToStep(2); 
-                },
-                // NO: Add new student and continue
-                function() { 
-                    if (currentStudents.length < SPACES_AVAIL) {
-                        currentFormIndex = currentStudents.length; // Next blank index
-                        addBlankStudentForm();
-                        updateButtonVisibility();
-                    } else {
-                        alert('Maximum number of students reached!');
-                    }
-                }
-            );
-        } else {
-            // Add New Student button click
-            if (currentStudents.length < SPACES_AVAIL) {
-                currentFormIndex = currentStudents.length; // Next blank index
-                addBlankStudentForm();
-                updateButtonVisibility();
-            } else {
-                alert('Maximum number of students reached!');
-            }
-        }
-        return true;
-    }
-
-    // Renders the blank form block using the PHP template (via AJAX)
-    function addBlankStudentForm(data = {}) {
-        const indexToRender = currentStudents.length; 
-        
-        $.ajax({
+    // Render helpers: request a form HTML from server
+    function requestForm(index, formType = 'student', title = null, data = {}, isLocked = false, showDelete = false, syncAppend = true) {
+        return $.ajax({
             url: DKEnrolmentData.ajax_url,
             type: 'POST',
             data: {
                 action: 'dk_render_student_form_html',
-                index: indexToRender,
+                index: index,
                 student_data: data,
-                is_locked: false,
-                show_delete: indexToRender > 0
-            },
-            success: function(response) {
-                if (response.success) {
-                    $('#dk-student-forms-container').append(response.data.html);
-                    // Scroll to the new form
-                    $('html, body').animate({
-                        scrollTop: $('#dk-student-forms-container').find('.dk-student-form-block').last().offset().top - 100
-                    }, 500);
-                }
+                is_locked: isLocked,
+                show_delete: showDelete,
+                form_type: formType,
+                title: title
             }
         });
     }
 
-    // Initial setup after 'Book for myself/someone else' is clicked
-    function showStudentForms(isMyself) {
-        if (isMyself) {
-            $('#dk-form-view-title').text('Book for Myself');
-        } else {
-             $('#dk-form-view-title').text('Group/Someone Else Booking');
-        }
-        
-        $('#dk-step-1-initial-view').hide();
-        $('#dk-step-1-form-view').fadeIn();
-        
-        if (currentStudents.length === 0) {
-            // Start a single blank form
-            addBlankStudentForm();
-        } else {
-            // Re-render existing forms from local storage
-            renderAllStudents();
-        }
-        updateButtonVisibility();
-    }
-    
-    // Renders all forms saved in currentStudents array
-    function renderAllStudents() {
+    // Render multiple forms based on state
+    function renderFormsForBooking(payeeIsStudent) {
         const $container = $('#dk-student-forms-container').empty();
-        currentStudents.forEach((data, index) => {
-             // Lock all but the last one, if there are multiple
-             const isLocked = index < currentStudents.length - 1; 
+        let promises = [];
 
-             // AJAX call to PHP to render form HTML for saved data
-            $.ajax({
-                url: DKEnrolmentData.ajax_url,
-                type: 'POST',
-                data: {
-                    action: 'dk_render_student_form_html',
-                    index: index,
-                    student_data: data,
-                    is_locked: isLocked, 
-                    show_delete: index > 0
-                },
-                async: false, // Must be synchronous to ensure correct index/order
-                success: function(response) {
-                    if (response.success) {
-                        $container.append(response.data.html);
-                    }
-                }
-            });
-        });
-        currentFormIndex = currentStudents.length - 1;
-        
-        // If the last form was saved, we need to add a new blank form
-        if (currentStudents.length > 0 && $('#dk-student-forms-container form').last().find('input').prop('disabled')) {
-             currentFormIndex = currentStudents.length;
-             addBlankStudentForm();
+        if (payeeIsStudent) {
+            // First form is both student1 and payee
+            promises.push(requestForm(0, 'student', 'Your Details (Student 1 & Booking Contact)', state.students[0] || {}, false, false).then(r => $container.append(r.data.html)));
+            for (let i = 1; i < state.students.length; i++) {
+                promises.push(requestForm(i, 'student', 'Student ' + (i+1) + ' Details', state.students[i] || {}, false, true).then(r => $container.append(r.data.html)));
+            }
+        } else {
+            // First form is booking contact (payee)
+            promises.push(requestForm(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false).then(r => $container.append(r.data.html)));
+            for (let i = 0; i < state.students.length; i++) {
+                promises.push(requestForm(i+1, 'student', 'Student ' + (i+1) + ' Details', state.students[i] || {}, false, (i+1) > 1).then(r => $container.append(r.data.html)));
+            }
         }
+
+        return $.when.apply($, promises);
     }
 
-    // Controls the visibility of 'Add New Student' button based on spots left
-    function updateButtonVisibility() {
-        if (currentStudents.length < SPACES_AVAIL) {
-            $('#dk-add-new-student-btn').show();
+    // Generic render for single-person bookings (book myself / someone else single student)
+    function renderSingleFlow(showPayeeAsStudent, isBookForMyself) {
+        $('#dk-step-1-initial-view, #dk-step-1-group-setup').hide();
+        $('#dk-step-1-form-view').show();
+        $('#dk-form-view-title').text(isBookForMyself ? 'Your Details (Student)' : (showPayeeAsStudent ? 'Your Details (Booking Contact)' : 'Booking'));
+        const $container = $('#dk-student-forms-container').empty();
+
+        if (isBookForMyself) {
+            // Request student form only, no add button
+            requestForm(0, 'student', 'Your Details (Student)', state.students[0] || {}, false, false).done(function(r) {
+                $container.append(r.data.html);
+            });
+            $('#dk-add-new-student-btn').hide();
         } else {
+            // Booking contact + student
+            // First: booking contact (payee)
+            requestForm(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false).done(function(r) {
+                $container.append(r.data.html);
+                // then student
+                requestForm(1, 'student', 'Student Details', state.students[0] || {}, false, true).done(function(r2) {
+                    $container.append(r2.data.html);
+                });
+            });
             $('#dk-add-new-student-btn').hide();
         }
     }
-    
-    // --- 3. Flow and UI Handlers (General Navigation) ---
 
-    // Updates the tab UI when moving steps
-    function goToStep(step) {
-        if (step > 3 || step < 1) return;
-        
-        // Deactivate old content and tab
-        $(`.dk-step-content`).hide();
-        $(`.dk-tab-item`).removeClass('dk-active-tab');
-
-        // Activate new content and tab
-        $(`#dk-step-${step}`).show();
-        $(`.dk-step-${step}`).addClass('dk-active-tab');
-        
-        activeStep = step;
-        
-        if (step === 2) {
-            renderPaymentSummary();
-            renderPaymentForm();
-        }
-    }
-    
-    // Renders the summary section for the Payment tab (Step 2)
-    function renderPaymentSummary() {
-        let html = '<div class="dk-summary-section">';
-        html += '<h3>Booking Summary</h3>';
-        
-        // Course Details Summary (Pulled from header)
-        html += `<div class="dk-summary-course-info">
-            <p><strong>Course:</strong> ${$('.dk-course-header h3').text()}</p>
-            <p>${$('.dk-course-header p').html()}</p>
-        </div>`;
-        html += '<hr class="dk-summary-divider">';
-
-        // Student List Summary
-        currentStudents.forEach((student, index) => {
-            const studentNum = index + 1;
-            
-            html += `<div class="dk-summary-student-item">
-                <div class="dk-student-details-row">
-                    <h4>Student ${studentNum}</h4>
-                    <a href="#" class="dk-edit-student-link" data-index="${index}">&lt;&lt; Edit Student Details</a>
-                </div>
-                <ul class="dk-student-summary-list">
-                    <li><span>First Name:</span> <span>${student.given_name}</span></li>
-                    <li><span>Last Name:</span> <span>${student.last_name}</span></li>
-                    <li><span>Email:</span> <span>${student.email}</span></li>
-                    <li><span>Mobile:</span> <span>${student.mobile}</span></li>
-                    <li class="dk-student-fee"><span>Fee:</span> <span>$${COURSE_COST_RAW.toFixed(2)}</span></li>
-                </ul>
-                <hr class="dk-summary-divider">
-            </div>`;
-        });
-        
-        // Totals (Initial Calculation)
-        const initialTotalFee = (currentStudents.length * COURSE_COST_RAW).toFixed(2);
-        html += `<h3 class="dk-summary-total" id="dk-total-fee-display">Total Fee: $${initialTotalFee}</h3>`;
-        html += '</div>'; // End Summary Section
-        
-        $('#dk-step-2').html(html);
-        
-        // Attach Edit Link Handler
-        $('.dk-edit-student-link').on('click', function(e) {
-            e.preventDefault();
-            goToStep(1); 
-            // The logic to unlock the specific form on return is complex and is best done 
-            // by relying on the user to click into the form they want to edit.
-        });
-    }
-
-    // Renders the Payee and Coupon form (Step 2)
-    function renderPaymentForm() {
-         let html = '';
-         // Payee Form HTML goes here (same four fields + checkboxes for copying)
-         html += '<h3 class="dk-content-title">Payee Details</h3>';
-         html += '<div class="dk-title-line"></div>';
-
-         html += '<form id="dk-payee-form">';
-         // We'll skip the actual payee form fields for now, as they don't involve API calls yet
-         html += '<p><em>Payee form fields will be added here (First Name, Last Name, Email, Mobile, Copy Checkboxes).</em></p>';
-         html += '</form>';
-
-         // Coupon Code Section
-         html += '<h3 class="dk-content-title">Coupon Code</h3>';
-         html += '<div class="dk-title-line"></div>';
-         html += `<div class="dk-coupon-area">
-             <input type="text" id="dk-coupon-code" placeholder="Enter Coupon Code">
-             <button id="dk-apply-coupon-btn" class="dk-btn dk-btn-secondary">Apply Coupon</button>
-             <p id="dk-coupon-message"></p>
-         </div>`;
-         
-         // Footer Nav Buttons
-         html += `<div class="dk-button-group dk-nav-buttons">
-            <button id="dk-back-to-details-btn" class="dk-btn dk-btn-primary dk-btn-50">&lt;&lt; Go Back</button>
-            <button id="dk-pay-now-btn" class="dk-btn dk-btn-primary dk-btn-50">Pay Now</button>
-        </div>`;
-         
-         $('#dk-step-2').append(html);
-         
-         // Attach event listeners for the new elements
-         $('#dk-back-to-details-btn').on('click', function() { goToStep(1); });
-         
-         // *** Future Step: Coupon Button Logic ***
-         $('#dk-apply-coupon-btn').on('click', handleCouponApplication);
-         
-         // *** Future Step: Pay Now Button Logic ***
-         $('#dk-pay-now-btn').on('click', handlePayNow);
-    }
-    
-    function handleCouponApplication() {
-        // --- THIS WILL BE IMPLEMENTED IN THE NEXT PHASE ---
-        alert('Coupon application logic is coming next!');
-        // For demonstration:
-        // const couponCode = $('#dk-coupon-code').val();
-        // CALL AJAX: dk_ajax_calculate_discount
-        // Update total cost: $('#dk-total-fee-display').text('Total Fee: $' + newCost);
-        // Display message: $('#dk-coupon-message').text('Coupon Applied!').addClass('dk-success');
-    }
-    
-    function handlePayNow() {
-        alert('Pay Now clicked. Final API batch process starts here.');
-    }
-
-
-    // --- 4. Event Listeners (Step 1) ---
-    
-    // Initial Choice: Book for Myself
+    // --- Event handlers for initial buttons ---
     $wrapper.on('click', '#dk-book-myself-btn', function() {
-        currentStudents = []; // Clear any previous state
-        currentFormIndex = 0;
-        sessionStorage.removeItem(STORAGE_KEY);
-        showStudentForms(true);
+        clearState();
+        // Show single student form; this person is both student1 and payee
+        renderSingleFlow(true, true);
     });
 
-    // Initial Choice: Book for Someone Else
     $wrapper.on('click', '#dk-book-someone-btn', function() {
-        currentStudents = []; // Clear any previous state
-        currentFormIndex = 0;
-        sessionStorage.removeItem(STORAGE_KEY);
-        showStudentForms(false);
+        clearState();
+        renderSingleFlow(true, false);
     });
 
-    // Action: Add New Student
+    $wrapper.on('click', '#dk-book-group-btn', function() {
+        $('#dk-step-1-initial-view').hide();
+        $('#dk-step-1-group-setup').show();
+        // set default and bounds
+        const max = Math.max(2, Math.min(SPACES_AVAIL, 999));
+        $('#dk_group_count').attr('max', max).val(2);
+    });
+
+    // Group number controls
+    $wrapper.on('click', '#dk_group_count_incr', function() {
+        const max = parseInt($('#dk_group_count').attr('max')) || SPACES_AVAIL;
+        let val = parseInt($('#dk_group_count').val()) || 2;
+        if (val < max) $('#dk_group_count').val(val + 1);
+    });
+    $wrapper.on('click', '#dk_group_count_decr', function() {
+        let val = parseInt($('#dk_group_count').val()) || 2;
+        if (val > 2) $('#dk_group_count').val(val - 1);
+    });
+
+    $wrapper.on('click', '#dk-group-go-back-btn', function() {
+        $('#dk-step-1-group-setup').hide();
+        $('#dk-step-1-initial-view').show();
+    });
+
+    // Continue from group setup
+    $wrapper.on('click', '#dk-group-continue-btn', function() {
+        const count = Math.max(2, Math.min(parseInt($('#dk_group_count').val()) || 2, parseInt($('#dk_group_count').attr('max')) || SPACES_AVAIL));
+        const partOfGroup = $('input[name="dk_group_member_toggle"]:checked').val() === 'yes';
+
+        // Build state arrays
+        state = { payee: null, students: [] };
+        if (partOfGroup) {
+            // First student is the payee
+            // initialize students with placeholders
+            for (let i=0;i<count;i++) state.students.push({});
+        } else {
+            // payee separate
+            state.payee = {};
+            for (let i=0;i<count;i++) state.students.push({});
+        }
+        saveState();
+
+        // Render forms accordingly and show form-view
+        $('#dk-step-1-group-setup').hide();
+        $('#dk-step-1-form-view').show();
+        $('#dk-add-new-student-btn').show();
+
+        // Render forms: using renderFormsForBooking
+        renderFormsForBooking(partOfGroup).done(function() {
+            // nothing extra
+        });
+    });
+
+    // Add new student button (in group flows)
     $wrapper.on('click', '#dk-add-new-student-btn', function() {
-        processAndAddStudent(false);
+        if (state.students.length >= SPACES_AVAIL) { alert('Maximum number of students reached!'); return; }
+        state.students.push({});
+        saveState();
+        // request form for next index
+        const newIndex = state.students.length - 1 + (state.payee ? 1 : 0);
+        const title = 'Student ' + (state.students.length) + ' Details';
+        requestForm(newIndex, 'student', title, {}, false, true).done(function(r) { $('#dk-student-forms-container').append(r.data.html); });
     });
 
-    // Action: Save Details / Final Student
-    $wrapper.on('click', '#dk-save-details-btn', function() {
-        processAndAddStudent(true); // Triggers confirmation on success
-    });
-    
-    // Action: Delete Student
+    // Delete student handler (delegated)
     $wrapper.on('click', '.dk-delete-student-btn', function() {
-        const indexToDelete = parseInt($(this).data('index'));
-        
-        // Remove from array and storage
-        currentStudents.splice(indexToDelete, 1);
-        saveStudents();
-        
-        // Re-render the forms completely to fix indices and unlock the last form
-        renderAllStudents(); 
-        updateButtonVisibility();
+        const idx = parseInt($(this).data('index'));
+        // Determine which logical student to remove based on presence of payee
+        if (state.payee) {
+            // first form is payee, students start at index 1 in DOM
+            const studentIndex = idx - 1;
+            if (studentIndex >= 0 && studentIndex < state.students.length) {
+                state.students.splice(studentIndex,1);
+            }
+        } else {
+            // no payee, students indexed directly
+            if (idx >= 0 && idx < state.students.length) state.students.splice(idx,1);
+        }
+        saveState();
+        // Re-render based on whether payee is student or not
+        const payeeIsStudent = !state.payee && state.students.length>0;
+        renderFormsForBooking(payeeIsStudent);
     });
 
-    // Action: << Go Back (From Form View to Initial View)
+    // Go back from form view
     $wrapper.on('click', '#dk-go-back-btn', function() {
-        currentStudents = [];
-        sessionStorage.removeItem(STORAGE_KEY);
+        // Return to initial screen (or group setup if applicable)
         $('#dk-step-1-form-view').hide();
-        $('#dk-step-1-initial-view').fadeIn();
+        $('#dk-step-1-initial-view').show();
+        $('#dk-student-forms-container').empty();
+        clearState();
     });
-    
-    // --- 5. Initialization and Re-load State ---
-    
-    // If we have saved data, skip the initial choice buttons
-    if (currentStudents.length > 0) {
-        showStudentForms(true); // Assumes 'Book for myself' to show forms
+
+    // Save Details (single flow) and Continue (group flow confirmation handled here)
+    $wrapper.on('click', '#dk-save-details-btn', function() {
+        // Collect currently visible forms and validate
+        const forms = $('#dk-student-forms-container .dk-student-form');
+        const collected = [];
+        let valid = true;
+        forms.each(function(i, form) {
+            const $f = $(form);
+            const fd = {};
+            $f.serializeArray().forEach(function(item){ fd[item.name]=item.value; });
+            // checkbox handling
+            fd.agreement_1 = $f.find('input[name="agreement_1"]').is(':checked');
+            fd.agreement_2 = $f.find('input[name="agreement_2"]').is(':checked');
+            const isStudent = $f.closest('.dk-student-form-block').data('form-type') === 'student';
+            if (!validatePerson(fd, isStudent)) { valid = false; return false; }
+            collected.push({ data: fd, isStudent: isStudent });
+        });
+        if (!valid) { $('#dk-validation-message').text(DKEnrolmentData.messages.validation_error).fadeIn(); return; }
+        $('#dk-validation-message').fadeOut();
+
+        // Save into state: heuristics based on form types
+        const firstBlock = $('#dk-student-forms-container .dk-student-form-block').first();
+        const firstType = firstBlock.data('form-type');
+        if (firstType === 'payee') {
+            // first is payee
+            state.payee = collected[0].data;
+            state.students = collected.slice(1).map(x => x.data);
+        } else {
+            // first is student and also payee
+            state.students = collected.map(x => x.data);
+            state.payee = collected[0].data;
+        }
+        saveState();
+
+        // Decide whether to proceed to step 2 immediately or confirm (group flows should confirm)
+        // If we are in a group flow (add button visible) then show confirmation modal
+        if ($('#dk-add-new-student-btn').is(':visible')) {
+            // show confirmation
+            const $modal = $('<div class="dk-modal-overlay"></div>');
+            const $content = $(`
+                <div class="dk-modal-content">
+                    <p>${DKEnrolmentData.messages.final_check}</p>
+                    <div class="dk-button-group">
+                        <button class="dk-btn dk-btn-primary dk-confirm-yes">Yes</button>
+                        <button class="dk-btn dk-btn-secondary dk-confirm-no">No</button>
+                    </div>
+                </div>
+            `);
+            $content.find('.dk-confirm-yes').on('click', function(){ $modal.remove(); goToStep(2); });
+            $content.find('.dk-confirm-no').on('click', function(){ $modal.remove(); });
+            $modal.append($content); $('body').append($modal);
+        } else {
+            // immediate continue
+            goToStep(2);
+        }
+    });
+
+    // Edit student link on step 2 will simply go back to step 1
+    $wrapper.on('click', '.dk-edit-student-link', function(e){ e.preventDefault(); goToStep(1); });
+
+    // If we have saved data, go to step 1 and render forms accordingly so users can continue
+    if (state.payee || (state.students && state.students.length>0)) {
+        // Decide rendering mode
+        const payeeIsStudent = !state.payee && (state.students && state.students.length>0);
+        $('#dk-step-1-initial-view').hide();
+        $('#dk-step-1-form-view').show();
+        $('#dk-add-new-student-btn').toggle( (state.students.length>1) );
+        renderFormsForBooking(payeeIsStudent);
     }
 });
