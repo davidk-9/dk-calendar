@@ -157,7 +157,11 @@ jQuery(document).ready(function($) {
                     course_date: courseDateStr,
                     course_location: course.location,
                     course_time: timeRange,
-                    course_name: course.instance_name, 
+                    // Use the canonical course name (not the instance name)
+                    course_name: course.course_name || course.instance_name || '',
+                    // Include course code and raw vacancy (spaces available)
+                    course_code: course.course_code || '',
+                    spaces_avail: typeof course.vacancy !== 'undefined' ? parseInt(course.vacancy, 10) : 0,
                     course_cost: formattedCost
                 };
                 
