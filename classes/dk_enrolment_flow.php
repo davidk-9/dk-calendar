@@ -257,6 +257,100 @@ function dk_enrolment_flow_shortcode_output( $atts ) {
  * Accepts POST `state` (array or JSON) containing `payee` and `students`.
  * Returns the same structure with `ax_contact_id` set for each person on success.
  */
+// Register single-contact sync handler (standalone AJAX endpoint)
+add_action( 'wp_ajax_dk_sync_contact', 'dk_ajax_sync_contact' );
+add_action( 'wp_ajax_nopriv_dk_sync_contact', 'dk_ajax_sync_contact' );
+function dk_ajax_sync_contact() {
+    $given = sanitize_text_field( $_POST['given_name'] ?? '' );
+    $surname = sanitize_text_field( $_POST['last_name'] ?? '' );
+    $email = sanitize_email( $_POST['email'] ?? '' );
+    $mobile = sanitize_text_field( $_POST['mobile'] ?? '' );
+
+    if ( empty($given) && empty($surname) && empty($email) ) {
+        wp_send_json_error( array('message' => 'Contact details missing') );
+        wp_die();
+    }
+
+    $api = new DK_Axcelerate_API();
+
+    $search = $api->search_contacts($given, $surname, $email);
+    if ( is_wp_error($search) ) {
+        wp_send_json_error( array('message' => $search->get_error_message()) );
+        wp_die();
+    }
+
+    if ( is_array($search) && count($search) > 0 ) {
+        $first = $search[0];
+        wp_send_json_success( array('contactID' => intval($first['CONTACTID'] ?? 0)) );
+        wp_die();
+    }
+
+    // Create
+    $payload = array(
+        'givenName' => $given,
+        'surname' => $surname,
+        'emailAddress' => $email,
+        'mobilephone' => $mobile
+    );
+
+    $created = $api->create_contact($payload);
+    if ( is_wp_error($created) ) {
+        wp_send_json_error( array('message' => $created->get_error_message()) );
+        wp_die();
+    }
+
+    if ( is_array($created) && isset($created['CONTACTID']) ) {
+        wp_send_json_success( array('contactID' => intval($created['CONTACTID'])) );
+        wp_die();
+    }
+
+    wp_send_json_error( array('message' => 'Unexpected create response', 'raw' => $created) );
+    wp_die();
+}
+
+// Register discount check handler (standalone AJAX endpoint)
+add_action( 'wp_ajax_dk_check_discount', 'dk_ajax_check_discount' );
+add_action( 'wp_ajax_nopriv_dk_check_discount', 'dk_ajax_check_discount' );
+function dk_ajax_check_discount() {
+    $contactID = intval( $_POST['contactID'] ?? 0 );
+    $instanceID = intval( $_POST['instanceID'] ?? 0 );
+    $originalPrice = floatval( $_POST['originalPrice'] ?? 0 );
+    $promoCode = sanitize_text_field( $_POST['promoCode'] ?? '' );
+
+    if ( empty($promoCode) ) {
+        wp_send_json_error( array('message' => 'Promo code required') );
+        wp_die();
+    }
+    if ( $contactID <= 0 || $instanceID <= 0 ) {
+        wp_send_json_error( array('message' => 'Missing contactID or instanceID') );
+        wp_die();
+    }
+
+    $api = new DK_Axcelerate_API();
+    $res = $api->get_discounts($contactID, 'w', $instanceID, $originalPrice, $promoCode);
+    if ( is_wp_error($res) ) {
+        wp_send_json_error( array('message' => $res->get_error_message(), 'raw' => $res->get_error_data()) );
+        wp_die();
+    }
+
+    // Expected response contains INITIALPRICE, REVISEDPRICE, DISCOUNTSAPPLIED array
+    $discountApplied = [];
+    $revisedPrice = $originalPrice;
+    if ( is_array($res) ) {
+        if ( isset($res['REVISEDPRICE']) ) $revisedPrice = $res['REVISEDPRICE'];
+        if ( isset($res['DISCOUNTSAPPLIED']) && is_array($res['DISCOUNTSAPPLIED']) && count($res['DISCOUNTSAPPLIED'])>0 ) {
+            $first = $res['DISCOUNTSAPPLIED'][0];
+            $discountApplied = array(
+                'DISCOUNTID' => isset($first['DISCOUNTID']) ? intval($first['DISCOUNTID']) : 0,
+                'NAME' => $first['NAME'] ?? '',
+                'REVISEDPRICE' => isset($first['REVISEDPRICE']) ? $first['REVISEDPRICE'] : $revisedPrice,
+            );
+        }
+    }
+
+    wp_send_json_success( array('revisedPrice' => $revisedPrice, 'discount' => $discountApplied, 'raw' => $res) );
+    wp_die();
+}
 add_action( 'wp_ajax_dk_sync_contacts', 'dk_ajax_sync_contacts' );
 add_action( 'wp_ajax_nopriv_dk_sync_contacts', 'dk_ajax_sync_contacts' );
 function dk_ajax_sync_contacts() {
@@ -267,107 +361,6 @@ function dk_ajax_sync_contacts() {
         wp_die();
     }
 
-        /**
-         * AJAX handler to search/create a single contact and return contactID
-         * Expects POST: given_name, last_name, email, mobile
-         */
-        add_action( 'wp_ajax_dk_sync_contact', 'dk_ajax_sync_contact' );
-        add_action( 'wp_ajax_nopriv_dk_sync_contact', 'dk_ajax_sync_contact' );
-        function dk_ajax_sync_contact() {
-            $given = sanitize_text_field( $_POST['given_name'] ?? '' );
-            $surname = sanitize_text_field( $_POST['last_name'] ?? '' );
-            $email = sanitize_email( $_POST['email'] ?? '' );
-            $mobile = sanitize_text_field( $_POST['mobile'] ?? '' );
-
-            if ( empty($given) && empty($surname) && empty($email) ) {
-                wp_send_json_error( array('message' => 'Contact details missing') );
-                wp_die();
-            }
-
-            $api = new DK_Axcelerate_API();
-
-            $search = $api->search_contacts($given, $surname, $email);
-            if ( is_wp_error($search) ) {
-                wp_send_json_error( array('message' => $search->get_error_message()) );
-                wp_die();
-            }
-
-            if ( is_array($search) && count($search) > 0 ) {
-                $first = $search[0];
-                wp_send_json_success( array('contactID' => intval($first['CONTACTID'] ?? 0)) );
-                wp_die();
-            }
-
-            // Create
-            $payload = array(
-                'givenName' => $given,
-                'surname' => $surname,
-                'emailAddress' => $email,
-                'mobilephone' => $mobile
-            );
-
-            $created = $api->create_contact($payload);
-            if ( is_wp_error($created) ) {
-                wp_send_json_error( array('message' => $created->get_error_message()) );
-                wp_die();
-            }
-
-            if ( is_array($created) && isset($created['CONTACTID']) ) {
-                wp_send_json_success( array('contactID' => intval($created['CONTACTID'])) );
-                wp_die();
-            }
-
-            wp_send_json_error( array('message' => 'Unexpected create response', 'raw' => $created) );
-            wp_die();
-        }
-
-
-        /**
-         * AJAX handler to check discounts for a single contact/instance using promo code
-         * Expects POST: contactID, instanceID, originalPrice, promoCode
-         */
-        add_action( 'wp_ajax_dk_check_discount', 'dk_ajax_check_discount' );
-        add_action( 'wp_ajax_nopriv_dk_check_discount', 'dk_ajax_check_discount' );
-        function dk_ajax_check_discount() {
-            $contactID = intval( $_POST['contactID'] ?? 0 );
-            $instanceID = intval( $_POST['instanceID'] ?? 0 );
-            $originalPrice = floatval( $_POST['originalPrice'] ?? 0 );
-            $promoCode = sanitize_text_field( $_POST['promoCode'] ?? '' );
-
-            if ( empty($promoCode) ) {
-                wp_send_json_error( array('message' => 'Promo code required') );
-                wp_die();
-            }
-            if ( $contactID <= 0 || $instanceID <= 0 ) {
-                wp_send_json_error( array('message' => 'Missing contactID or instanceID') );
-                wp_die();
-            }
-
-            $api = new DK_Axcelerate_API();
-            $res = $api->get_discounts($contactID, 'w', $instanceID, $originalPrice, $promoCode);
-            if ( is_wp_error($res) ) {
-                wp_send_json_error( array('message' => $res->get_error_message(), 'raw' => $res->get_error_data()) );
-                wp_die();
-            }
-
-            // Expected response contains INITIALPRICE, REVISEDPRICE, DISCOUNTSAPPLIED array
-            $discountApplied = [];
-            $revisedPrice = $originalPrice;
-            if ( is_array($res) ) {
-                if ( isset($res['REVISEDPRICE']) ) $revisedPrice = $res['REVISEDPRICE'];
-                if ( isset($res['DISCOUNTSAPPLIED']) && is_array($res['DISCOUNTSAPPLIED']) && count($res['DISCOUNTSAPPLIED'])>0 ) {
-                    $first = $res['DISCOUNTSAPPLIED'][0];
-                    $discountApplied = array(
-                        'DISCOUNTID' => isset($first['DISCOUNTID']) ? intval($first['DISCOUNTID']) : 0,
-                        'NAME' => $first['NAME'] ?? '',
-                        'REVISEDPRICE' => isset($first['REVISEDPRICE']) ? $first['REVISEDPRICE'] : $revisedPrice,
-                    );
-                }
-            }
-
-            wp_send_json_success( array('revisedPrice' => $revisedPrice, 'discount' => $discountApplied, 'raw' => $res) );
-            wp_die();
-        }
 
     $state = null;
     if ( is_string($raw) ) {
