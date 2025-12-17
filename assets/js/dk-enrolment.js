@@ -472,6 +472,33 @@ jQuery(document).ready(function($) {
 
         // Attach handlers
         $('#dk-back-to-details-btn').on('click', function(){ goToStep(1); });
-        $('#dk-pay-now-btn').on('click', function(){ alert('Pay Now clicked. Final API batch process starts here.'); });
+        $('#dk-pay-now-btn').on('click', function(){
+            // Start contact sync process: send current state to server to search/create contacts
+            const currentState = loadState();
+            $.ajax({
+                url: DKEnrolmentData.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'dk_sync_contacts',
+                    state: JSON.stringify(currentState)
+                },
+                success: function(res) {
+                    if (res && res.success && res.data && res.data.state) {
+                        // Update sessionStorage with returned state containing ax_contact_id fields
+                        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(res.data.state));
+                        alert('Contacts successfully synced.');
+                    } else if (res && !res.success && res.data) {
+                        console.error('Contact sync errors:', res.data.errors || res.data.message);
+                        alert('Contact sync completed with errors. Check console for details.');
+                    } else {
+                        alert('Unexpected response from contact sync.');
+                    }
+                },
+                error: function(xhr, status, err) {
+                    console.error('AJAX error', status, err, xhr.responseText);
+                    alert('Contact sync failed. See console for details.');
+                }
+            });
+        });
     }
 });

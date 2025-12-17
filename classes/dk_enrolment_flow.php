@@ -3,6 +3,9 @@
 
 defined('ABSPATH') or die('No script kiddies please!');
 
+// Include Axcelerate API helper
+require_once __DIR__ . '/dk_axcelerate_api.php';
+
 /**
  * Renders the HTML template for a single form iteration.
  * Supports form types: 'student' (includes agreements) and 'payee'/'booking_contact' (no agreements).
@@ -246,4 +249,99 @@ function dk_enrolment_flow_shortcode_output( $atts ) {
     </div>
     <?php
     return ob_get_clean();
+}
+
+
+/**
+ * AJAX handler to synchronise contacts with Axcelerate.
+ * Accepts POST `state` (array or JSON) containing `payee` and `students`.
+ * Returns the same structure with `ax_contact_id` set for each person on success.
+ */
+add_action( 'wp_ajax_dk_sync_contacts', 'dk_ajax_sync_contacts' );
+add_action( 'wp_ajax_nopriv_dk_sync_contacts', 'dk_ajax_sync_contacts' );
+function dk_ajax_sync_contacts() {
+    // Accept a JSON string or an array
+    $raw = wp_unslash( $_POST['state'] ?? '' );
+    if ( empty($raw) ) {
+        wp_send_json_error( array('message' => 'Missing state payload') );
+        wp_die();
+    }
+
+    $state = null;
+    if ( is_string($raw) ) {
+        $state = json_decode( $raw, true );
+    } elseif ( is_array($raw) ) {
+        $state = $raw;
+    }
+
+    if ( ! is_array($state) ) {
+        wp_send_json_error( array('message' => 'Invalid state payload') );
+        wp_die();
+    }
+
+    $api = new DK_Axcelerate_API();
+    $errors = array();
+
+    // Helper to process one person record; returns contact id or WP_Error
+    $process_person = function($person) use ($api) {
+        $given = sanitize_text_field($person['given_name'] ?? '');
+        $surname = sanitize_text_field($person['last_name'] ?? '');
+        $email = sanitize_email( $person['email'] ?? '' );
+        $mobile = sanitize_text_field($person['mobile'] ?? '');
+
+        // Try search
+        $search = $api->search_contacts($given, $surname, $email);
+        if ( is_wp_error($search) ) return $search;
+
+        if ( is_array($search) && count($search) > 0 ) {
+            // Use first match
+            $first = $search[0];
+            return intval($first['CONTACTID'] ?? 0);
+        }
+
+        // Not found -> create
+        $payload = array(
+            'givenName' => $given,
+            'surname' => $surname,
+            'emailAddress' => $email,
+        );
+        if (!empty($mobile)) $payload['mobilePhone'] = $mobile;
+
+        $created = $api->create_contact($payload);
+        if ( is_wp_error($created) ) return $created;
+        if ( is_array($created) && isset($created['CONTACTID']) ) return intval($created['CONTACTID']);
+        // Unexpected response
+        return new WP_Error('no_contact_id', 'Create contact response missing CONTACTID');
+    };
+
+    // Process payee
+    if ( isset($state['payee']) && is_array($state['payee']) ) {
+        $res = $process_person($state['payee']);
+        if ( is_wp_error($res) ) {
+            $errors[] = 'Payee: ' . $res->get_error_message();
+        } else {
+            $state['payee']['ax_contact_id'] = $res;
+        }
+    }
+
+    // Process students
+    if ( isset($state['students']) && is_array($state['students']) ) {
+        foreach ( $state['students'] as $i => $student ) {
+            if ( !is_array($student) ) continue;
+            $res = $process_person($student);
+            if ( is_wp_error($res) ) {
+                $errors[] = 'Student ' . ($i+1) . ': ' . $res->get_error_message();
+            } else {
+                $state['students'][$i]['ax_contact_id'] = $res;
+            }
+        }
+    }
+
+    if ( ! empty($errors) ) {
+        wp_send_json_error( array('message' => 'One or more contacts failed to sync', 'errors' => $errors, 'state' => $state) );
+    } else {
+        wp_send_json_success( array('message' => 'Contacts synced', 'state' => $state) );
+    }
+
+    wp_die();
 }
