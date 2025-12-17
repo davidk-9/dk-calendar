@@ -267,6 +267,60 @@ function dk_ajax_sync_contacts() {
         wp_die();
     }
 
+        /**
+         * AJAX handler to search/create a single contact and return contactID
+         * Expects POST: given_name, last_name, email, mobile
+         */
+        add_action( 'wp_ajax_dk_sync_contact', 'dk_ajax_sync_contact' );
+        add_action( 'wp_ajax_nopriv_dk_sync_contact', 'dk_ajax_sync_contact' );
+        function dk_ajax_sync_contact() {
+            $given = sanitize_text_field( $_POST['given_name'] ?? '' );
+            $surname = sanitize_text_field( $_POST['last_name'] ?? '' );
+            $email = sanitize_email( $_POST['email'] ?? '' );
+            $mobile = sanitize_text_field( $_POST['mobile'] ?? '' );
+
+            if ( empty($given) && empty($surname) && empty($email) ) {
+                wp_send_json_error( array('message' => 'Contact details missing') );
+                wp_die();
+            }
+
+            $api = new DK_Axcelerate_API();
+
+            $search = $api->search_contacts($given, $surname, $email);
+            if ( is_wp_error($search) ) {
+                wp_send_json_error( array('message' => $search->get_error_message()) );
+                wp_die();
+            }
+
+            if ( is_array($search) && count($search) > 0 ) {
+                $first = $search[0];
+                wp_send_json_success( array('contactID' => intval($first['CONTACTID'] ?? 0)) );
+                wp_die();
+            }
+
+            // Create
+            $payload = array(
+                'givenName' => $given,
+                'surname' => $surname,
+                'emailAddress' => $email,
+                'mobilephone' => $mobile
+            );
+
+            $created = $api->create_contact($payload);
+            if ( is_wp_error($created) ) {
+                wp_send_json_error( array('message' => $created->get_error_message()) );
+                wp_die();
+            }
+
+            if ( is_array($created) && isset($created['CONTACTID']) ) {
+                wp_send_json_success( array('contactID' => intval($created['CONTACTID'])) );
+                wp_die();
+            }
+
+            wp_send_json_error( array('message' => 'Unexpected create response', 'raw' => $created) );
+            wp_die();
+        }
+
 
         /**
          * AJAX handler to check discounts for a single contact/instance using promo code

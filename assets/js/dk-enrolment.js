@@ -490,10 +490,51 @@ jQuery(document).ready(function($) {
             // Ensure contacts exist (create/search) before requesting discounts
             const currentState = loadState();
             const ensureContacts = function() {
-                return $.ajax({
-                    url: DKEnrolmentData.ajax_url,
-                    type: 'POST',
-                    data: { action: 'dk_sync_contacts', state: JSON.stringify(currentState) }
+                // For each person missing ax_contact_id, call single-contact AJAX endpoint
+                const ops = [];
+
+                const syncOne = function(person, idx, containerKey) {
+                    return $.ajax({
+                        url: DKEnrolmentData.ajax_url,
+                        type: 'POST',
+                        data: {
+                            action: 'dk_sync_contact',
+                            given_name: person.given_name || person.givenName || '',
+                            last_name: person.last_name || person.lastName || person.surname || '',
+                            email: person.email || person.emailAddress || '',
+                            mobile: person.mobile || person.mobilephone || ''
+                        }
+                    }).done(function(r){
+                        if (r && r.success && r.data && r.data.contactID) {
+                            if (containerKey === 'payee') {
+                                currentState.payee.ax_contact_id = r.data.contactID;
+                            } else if (containerKey === 'students') {
+                                currentState.students[idx].ax_contact_id = r.data.contactID;
+                            }
+                        }
+                    });
+                };
+
+                if (currentState.payee && (!currentState.payee.ax_contact_id && !currentState.payee.ax_contact)) {
+                    ops.push(syncOne(currentState.payee, 0, 'payee'));
+                }
+
+                if (currentState.students && currentState.students.length) {
+                    currentState.students.forEach(function(s, i){
+                        if (!s.ax_contact_id && !s.ax_contact) {
+                            ops.push(syncOne(s, i, 'students'));
+                        }
+                    });
+                }
+
+                if (ops.length === 0) {
+                    const d = $.Deferred(); d.resolve({ success:true, data:{ state: currentState } }); return d.promise();
+                }
+
+                return $.when.apply($, ops).then(function(){
+                    return { success:true, data:{ state: currentState } };
+                }, function(){
+                    return $.Deferred().resolve({ success:false, data:{ message: 'One or more contact syncs failed', state: currentState } });
                 });
             };
 
