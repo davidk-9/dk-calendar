@@ -455,6 +455,13 @@ jQuery(document).ready(function($) {
         const total = ((state.students && state.students.length) ? state.students.length : 0) * COURSE_COST_RAW;
         html += '<h3 class="dk-summary-total">Total Fee: $' + total.toFixed(2) + '</h3>';
 
+        // Promo code input (display only for now)
+        html += '<div class="dk-promo-row" style="margin-top:12px;">';
+        html += '<label for="dk-promo-code" style="margin-right:8px;">Promo Code:</label>';
+        html += '<input type="text" id="dk-promo-code" name="promo_code" style="width:160px;margin-right:8px;" />';
+        html += '<button id="dk-apply-promo-btn" class="dk-btn dk-btn-secondary">Apply Promotion Code</button>';
+        html += '</div>';
+
         // Pay button placeholder
         html += '<div class="dk-button-group dk-nav-buttons" style="margin-top:20px;">';
         html += '<button id="dk-back-to-details-btn" class="dk-btn dk-btn-secondary dk-btn-50"><< Go Back</button>';
