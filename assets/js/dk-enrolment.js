@@ -469,6 +469,7 @@ jQuery(document).ready(function($) {
         html += '<input type="text" id="dk-promo-code" name="promo_code" style="width:160px;margin-right:8px;" />';
         html += '<button id="dk-apply-promo-btn" class="dk-btn dk-btn-secondary">Apply Promotion Code</button>';
         html += '</div>';
+        html += '<div id="dk-promo-status" class="dk-promo-status" style="margin-top:8px;color:#333;"></div>';
 
         // Pay button placeholder
         html += '<div class="dk-button-group dk-nav-buttons" style="margin-top:20px;">';
@@ -496,6 +497,10 @@ jQuery(document).ready(function($) {
                 });
             };
 
+            // show initial status and disable button
+            $('#dk-promo-status').text('Checking promo code and ensuring contacts...');
+            $('#dk-apply-promo-btn').prop('disabled', true);
+
             ensureContacts().done(function(res){
                 if (res && res.success && res.data && res.data.state) {
                     // update local storage and state
@@ -503,12 +508,14 @@ jQuery(document).ready(function($) {
                     state = res.data.state;
                 } else if (res && !res.success) {
                     console.error('Contact sync errors:', res.data && res.data.errors ? res.data.errors : res.data);
-                    alert('Contact sync returned errors. See console.');
+                    $('#dk-promo-status').text('Contact sync returned errors. See console.');
+                    $('#dk-apply-promo-btn').prop('disabled', false);
                     return;
                 }
 
                 // Now call discount check for each student
                 const requests = [];
+                $('#dk-promo-status').text('Checking discounts for students...');
                 if (state.students && state.students.length) {
                     state.students.forEach(function(student, idx){
                         const contactID = student.ax_contact_id || student.ax_contact || 0;
@@ -546,6 +553,19 @@ jQuery(document).ready(function($) {
                 // After all requests finish, save state and re-render step2
                 $.when.apply($, requests).always(function(){
                     saveState();
+                    // Determine if any discounts applied
+                    let appliedCount = 0;
+                    if (state.students && state.students.length) {
+                        state.students.forEach(function(s){
+                            if (s.discount_id && s.discount_id > 0) appliedCount++;
+                        });
+                    }
+                    if (appliedCount > 0) {
+                        $('#dk-promo-status').css('color','green').text('Promotion applied: ' + appliedCount + ' student(s) received a discount.');
+                    } else {
+                        $('#dk-promo-status').css('color','red').text('No discounts applied — code invalid or expired.');
+                    }
+                    $('#dk-apply-promo-btn').prop('disabled', false);
                     renderStep2();
                 });
 
