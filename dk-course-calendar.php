@@ -902,6 +902,13 @@ function dk_calendar_ajax_render() {
     
     $courses_by_day = array();
     foreach ( $courses as $course ) {
+        // Ensure vacancy is a raw integer when sent to the frontend
+        if ( isset( $course['vacancy'] ) ) {
+            $course['vacancy'] = intval( $course['vacancy'] );
+        } else {
+            $course['vacancy'] = 0;
+        }
+
         $day = (new DateTime( $course['start_date'] ))->format('j');
         $courses_by_day[$day][] = $course;
     }
