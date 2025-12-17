@@ -267,6 +267,54 @@ function dk_ajax_sync_contacts() {
         wp_die();
     }
 
+
+        /**
+         * AJAX handler to check discounts for a single contact/instance using promo code
+         * Expects POST: contactID, instanceID, originalPrice, promoCode
+         */
+        add_action( 'wp_ajax_dk_check_discount', 'dk_ajax_check_discount' );
+        add_action( 'wp_ajax_nopriv_dk_check_discount', 'dk_ajax_check_discount' );
+        function dk_ajax_check_discount() {
+            $contactID = intval( $_POST['contactID'] ?? 0 );
+            $instanceID = intval( $_POST['instanceID'] ?? 0 );
+            $originalPrice = floatval( $_POST['originalPrice'] ?? 0 );
+            $promoCode = sanitize_text_field( $_POST['promoCode'] ?? '' );
+
+            if ( empty($promoCode) ) {
+                wp_send_json_error( array('message' => 'Promo code required') );
+                wp_die();
+            }
+            if ( $contactID <= 0 || $instanceID <= 0 ) {
+                wp_send_json_error( array('message' => 'Missing contactID or instanceID') );
+                wp_die();
+            }
+
+            $api = new DK_Axcelerate_API();
+            $res = $api->get_discounts($contactID, 'w', $instanceID, $originalPrice, $promoCode);
+            if ( is_wp_error($res) ) {
+                wp_send_json_error( array('message' => $res->get_error_message(), 'raw' => $res->get_error_data()) );
+                wp_die();
+            }
+
+            // Expected response contains INITIALPRICE, REVISEDPRICE, DISCOUNTSAPPLIED array
+            $discountApplied = [];
+            $revisedPrice = $originalPrice;
+            if ( is_array($res) ) {
+                if ( isset($res['REVISEDPRICE']) ) $revisedPrice = $res['REVISEDPRICE'];
+                if ( isset($res['DISCOUNTSAPPLIED']) && is_array($res['DISCOUNTSAPPLIED']) && count($res['DISCOUNTSAPPLIED'])>0 ) {
+                    $first = $res['DISCOUNTSAPPLIED'][0];
+                    $discountApplied = array(
+                        'DISCOUNTID' => isset($first['DISCOUNTID']) ? intval($first['DISCOUNTID']) : 0,
+                        'NAME' => $first['NAME'] ?? '',
+                        'REVISEDPRICE' => isset($first['REVISEDPRICE']) ? $first['REVISEDPRICE'] : $revisedPrice,
+                    );
+                }
+            }
+
+            wp_send_json_success( array('revisedPrice' => $revisedPrice, 'discount' => $discountApplied, 'raw' => $res) );
+            wp_die();
+        }
+
     $state = null;
     if ( is_string($raw) ) {
         $state = json_decode( $raw, true );

@@ -93,6 +93,21 @@ class DK_Axcelerate_API {
         if ($code >= 200 && $code < 300) return $data;
         return new WP_Error('api_error', 'HTTP ' . $code . ' - ' . substr($body,0,500));
     }
+
+    /**
+     * Check course discounts for a contact and promo code
+     * Expected query params: contactID, type, instanceID, originalPrice, PromoCode
+     */
+    public function get_discounts($contactID, $type, $instanceID, $originalPrice, $promoCode) {
+        $query = array(
+            'contactID' => intval($contactID),
+            'type' => $type,
+            'instanceID' => intval($instanceID),
+            'originalPrice' => $originalPrice,
+            'PromoCode' => $promoCode
+        );
+        return $this->request_get('/api/course/discounts', $query);
+    }
 }
 
 ?>

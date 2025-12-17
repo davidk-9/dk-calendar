@@ -435,6 +435,8 @@ jQuery(document).ready(function($) {
         if (state.students && state.students.length) {
             state.students.forEach(function(student, idx) {
                 const num = idx + 1;
+                // Use revised_price if present, otherwise original
+                const feeVal = (typeof student.revised_price !== 'undefined' && student.revised_price !== null) ? parseFloat(student.revised_price) : COURSE_COST_RAW;
                 html += '<div class="dk-summary-student-item">';
                 html += '<div class="dk-student-details-row"><h4>Student ' + num + '</h4><a href="#" class="dk-edit-student-link" data-index="' + idx + '">&lt;&lt; Edit Student Details</a></div>';
                 html += '<ul class="dk-student-summary-list">';
@@ -442,7 +444,7 @@ jQuery(document).ready(function($) {
                 html += '<li><span>Last Name:</span><span>' + (student.last_name||'') + '</span></li>';
                 html += '<li><span>Email:</span><span>' + (student.email||'') + '</span></li>';
                 html += '<li><span>Mobile:</span><span>' + (student.mobile||'') + '</span></li>';
-                html += '<li class="dk-student-fee"><span>Fee:</span><span>$' + COURSE_COST_RAW.toFixed(2) + '</span></li>';
+                html += '<li class="dk-student-fee"><span>Fee:</span><span>$' + feeVal.toFixed(2) + '</span></li>';
                 html += '</ul>';
                 html += '</div>';
             });
@@ -452,7 +454,13 @@ jQuery(document).ready(function($) {
         html += '</div>';
 
         // Totals and actions
-        const total = ((state.students && state.students.length) ? state.students.length : 0) * COURSE_COST_RAW;
+        // Total uses revised_price when present
+        let total = 0;
+        if (state.students && state.students.length) {
+            state.students.forEach(function(s){
+                total += (typeof s.revised_price !== 'undefined' && s.revised_price !== null) ? parseFloat(s.revised_price) : COURSE_COST_RAW;
+            });
+        }
         html += '<h3 class="dk-summary-total">Total Fee: $' + total.toFixed(2) + '</h3>';
 
         // Promo code input (display only for now)
@@ -472,32 +480,78 @@ jQuery(document).ready(function($) {
 
         // Attach handlers
         $('#dk-back-to-details-btn').on('click', function(){ goToStep(1); });
-        $('#dk-pay-now-btn').on('click', function(){
-            // Start contact sync process: send current state to server to search/create contacts
+
+        // Apply promotion code
+        $('#dk-apply-promo-btn').on('click', function(){
+            const promo = $('#dk-promo-code').val().trim();
+            if (!promo) { alert('Please enter a promo code.'); return; }
+
+            // Ensure contacts exist (create/search) before requesting discounts
             const currentState = loadState();
-            $.ajax({
-                url: DKEnrolmentData.ajax_url,
-                type: 'POST',
-                data: {
-                    action: 'dk_sync_contacts',
-                    state: JSON.stringify(currentState)
-                },
-                success: function(res) {
-                    if (res && res.success && res.data && res.data.state) {
-                        // Update sessionStorage with returned state containing ax_contact_id fields
-                        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(res.data.state));
-                        alert('Contacts successfully synced.');
-                    } else if (res && !res.success && res.data) {
-                        console.error('Contact sync errors:', res.data.errors || res.data.message);
-                        alert('Contact sync completed with errors. Check console for details.');
-                    } else {
-                        alert('Unexpected response from contact sync.');
-                    }
-                },
-                error: function(xhr, status, err) {
-                    console.error('AJAX error', status, err, xhr.responseText);
-                    alert('Contact sync failed. See console for details.');
+            const ensureContacts = function() {
+                return $.ajax({
+                    url: DKEnrolmentData.ajax_url,
+                    type: 'POST',
+                    data: { action: 'dk_sync_contacts', state: JSON.stringify(currentState) }
+                });
+            };
+
+            ensureContacts().done(function(res){
+                if (res && res.success && res.data && res.data.state) {
+                    // update local storage and state
+                    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(res.data.state));
+                    state = res.data.state;
+                } else if (res && !res.success) {
+                    console.error('Contact sync errors:', res.data && res.data.errors ? res.data.errors : res.data);
+                    alert('Contact sync returned errors. See console.');
+                    return;
                 }
+
+                // Now call discount check for each student
+                const requests = [];
+                if (state.students && state.students.length) {
+                    state.students.forEach(function(student, idx){
+                        const contactID = student.ax_contact_id || student.ax_contact || 0;
+                        // If still missing, skip and log
+                        if (!contactID) {
+                            console.warn('Skipping student without contactID at index', idx);
+                            return;
+                        }
+                        requests.push($.ajax({
+                            url: DKEnrolmentData.ajax_url,
+                            type: 'POST',
+                            data: {
+                                action: 'dk_check_discount',
+                                contactID: contactID,
+                                instanceID: INSTANCE_ID,
+                                originalPrice: COURSE_COST_RAW,
+                                promoCode: promo
+                            }
+                        }).done(function(r){
+                            if (r && r.success && r.data) {
+                                const revised = parseFloat(r.data.revisedPrice);
+                                const discount = r.data.discount || {};
+                                // Save into state
+                                state.students[idx].revised_price = revised;
+                                if (discount.DISCOUNTID && discount.DISCOUNTID > 0) state.students[idx].discount_id = discount.DISCOUNTID;
+                            } else {
+                                console.warn('Discount check returned no-success for student', idx, r);
+                            }
+                        }).fail(function(xhr){
+                            console.error('Discount AJAX failed for student', idx, xhr.responseText);
+                        }));
+                    });
+                }
+
+                // After all requests finish, save state and re-render step2
+                $.when.apply($, requests).always(function(){
+                    saveState();
+                    renderStep2();
+                });
+
+            }).fail(function(xhr){
+                console.error('Contact sync AJAX error', xhr.responseText);
+                alert('Failed to ensure contacts. See console for details.');
             });
         });
     }
