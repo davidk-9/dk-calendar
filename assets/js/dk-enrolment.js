@@ -12,6 +12,8 @@ jQuery(document).ready(function($) {
 
     // State shape: { payee: {...} | null, students: [ {...}, ... ] }
     let state = loadState();
+    // Track which top-level flow is active: 'initial' | 'single' | 'someone' | 'group-setup' | 'group'
+    let activeFlow = 'initial';
 
     function loadState() {
         try {
@@ -59,33 +61,52 @@ jQuery(document).ready(function($) {
     }
 
     // Render multiple forms based on state
-    function renderFormsForBooking(payeeIsStudent) {
+    function renderFormsForBooking(payeeIsStudent, isGroupFlow = false) {
         const $container = $('#dk-student-forms-container').empty();
-        let promises = [];
 
+        // If called as part of an explicit group flow, set the title accordingly
+        if (isGroupFlow) {
+            $('#dk-form-view-title').text('Booking for a Group');
+        }
+
+        // Build ordered request list so we can append responses in sequence
+        const requests = [];
         if (payeeIsStudent) {
             // First form is both student1 and payee
-            promises.push(requestForm(0, 'student', 'Your Details (Student 1 & Booking Contact)', state.students[0] || {}, false, false).then(r => $container.append(r.data.html)));
+            requests.push({ index: 0, type: 'student', title: 'Your Details (Student 1 & Booking Contact)', data: state.students[0] || {}, showDelete: false });
             for (let i = 1; i < state.students.length; i++) {
-                promises.push(requestForm(i, 'student', 'Student ' + (i+1) + ' Details', state.students[i] || {}, false, true).then(r => $container.append(r.data.html)));
+                requests.push({ index: i, type: 'student', title: 'Student ' + (i+1) + ' Details', data: state.students[i] || {}, showDelete: true });
             }
         } else {
             // First form is booking contact (payee)
-            promises.push(requestForm(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false).then(r => $container.append(r.data.html)));
+            requests.push({ index: 0, type: 'payee', title: 'Your Details (Booking Contact)', data: state.payee || {}, showDelete: false });
             for (let i = 0; i < state.students.length; i++) {
-                promises.push(requestForm(i+1, 'student', 'Student ' + (i+1) + ' Details', state.students[i] || {}, false, (i+1) > 1).then(r => $container.append(r.data.html)));
+                requests.push({ index: i+1, type: 'student', title: 'Student ' + (i+1) + ' Details', data: state.students[i] || {}, showDelete: (i+1) > 1 });
             }
         }
 
-        return $.when.apply($, promises);
+        // Execute requests sequentially to preserve display order
+        let chain = $.Deferred().resolve();
+        requests.forEach(function(req) {
+            chain = chain.then(function() {
+                return requestForm(req.index, req.type, req.title, req.data, false, req.showDelete).done(function(r) {
+                    $container.append(r.data.html);
+                }).fail(function() {
+                    $container.append('<p class="dk-loading">Failed to load a form.</p>');
+                });
+            });
+        });
+        return chain.promise();
     }
 
     // Generic render for single-person bookings (book myself / someone else single student)
     function renderSingleFlow(showPayeeAsStudent, isBookForMyself) {
+        // mark flow for navigation/back behavior
+        activeFlow = isBookForMyself ? 'single' : 'someone';
         $('#dk-step-1-initial-view, #dk-step-1-group-setup').hide();
         $('#dk-step-1-form-view').show();
         // Immediate title to reduce perceived latency
-        $('#dk-form-view-title').text(isBookForMyself ? 'Book for Myself' : (showPayeeAsStudent ? 'Your Details (Booking Contact)' : 'Booking'));
+        $('#dk-form-view-title').text(isBookForMyself ? 'Book for Myself' : (showPayeeAsStudent ? 'Book For Someone Else' : 'Booking'));
         const $container = $('#dk-student-forms-container');
 
         // Show loading placeholder while AJAX form is requested
@@ -100,10 +121,10 @@ jQuery(document).ready(function($) {
         } else {
             // Booking contact + student
             // First: booking contact (payee)
-            requestForm(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false).done(function(r) {
+                requestForm(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false).done(function(r) {
                 $container.empty().append(r.data.html);
-                // then student
-                requestForm(1, 'student', 'Student Details', state.students[0] || {}, false, true).done(function(r2) {
+                // then student (do NOT show delete button here — always require at least one student)
+                requestForm(1, 'student', 'Student Details', state.students[0] || {}, false, false).done(function(r2) {
                     $container.append(r2.data.html);
                 }).fail(function(){ $container.append('<p class="dk-loading">Failed to load student form.</p>'); });
             }).fail(function(){ $container.html('<p class="dk-loading">Failed to load forms. Please try again.</p>'); });
@@ -115,11 +136,13 @@ jQuery(document).ready(function($) {
     $wrapper.on('click', '#dk-book-myself-btn', function() {
         clearState();
         // Show single student form; this person is both student1 and payee
+        activeFlow = 'single';
         renderSingleFlow(true, true);
     });
 
     $wrapper.on('click', '#dk-book-someone-btn', function() {
         clearState();
+        activeFlow = 'someone';
         renderSingleFlow(true, false);
     });
 
@@ -145,6 +168,9 @@ jQuery(document).ready(function($) {
     $wrapper.on('click', '#dk-group-go-back-btn', function() {
         $('#dk-step-1-group-setup').hide();
         $('#dk-step-1-initial-view').show();
+        activeFlow = 'initial';
+        // User went back to top-level buttons — clear transient group state
+        clearState();
     });
 
     // Continue from group setup
@@ -152,26 +178,56 @@ jQuery(document).ready(function($) {
         const count = Math.max(2, Math.min(parseInt($('#dk_group_count').val()) || 2, parseInt($('#dk_group_count').attr('max')) || SPACES_AVAIL));
         const partOfGroup = $('input[name="dk_group_member_toggle"]:checked').val() === 'yes';
 
-        // Build state arrays
-        state = { payee: null, students: [] };
+        // Build state arrays while preserving any known data:
+        // - If partOfGroup: payee is students[0]. Preserve existing payee or students into the new students slots.
+        // - If payee separate: preserve state.payee if present, otherwise promote students[0] to payee.
+        let newPayee = null;
+        let newStudents = [];
+
         if (partOfGroup) {
-            // First student is the payee
-            // initialize students with placeholders
-            for (let i=0;i<count;i++) state.students.push({});
+            // Known people: if there was a separate payee previously, prefer that first, then existing students
+            const known = [];
+            if (state.payee && Object.keys(state.payee).length) known.push(state.payee);
+            if (state.students && state.students.length) known.push.apply(known, state.students);
+            for (let i = 0; i < count; i++) {
+                if (known[i]) newStudents.push(known[i]); else newStudents.push({});
+            }
+            newPayee = null; // payee is represented as student[0]
         } else {
             // payee separate
-            state.payee = {};
-            for (let i=0;i<count;i++) state.students.push({});
+            if (state.payee && Object.keys(state.payee).length) {
+                newPayee = state.payee;
+                const knownStudents = state.students ? state.students.slice() : [];
+                for (let i = 0; i < count; i++) {
+                    if (knownStudents[i]) newStudents.push(knownStudents[i]); else newStudents.push({});
+                }
+            } else if (state.students && state.students.length) {
+                // promote first existing student to be payee and shift remaining students
+                newPayee = state.students[0];
+                const remaining = state.students.slice(1);
+                for (let i = 0; i < count; i++) {
+                    if (remaining[i]) newStudents.push(remaining[i]); else newStudents.push({});
+                }
+            } else {
+                // no known data
+                newPayee = {};
+                for (let i = 0; i < count; i++) newStudents.push({});
+            }
         }
+
+        // Trim trailing empty students if new count is smaller than before
+        // (the above construction already set exact length)
+        state.payee = newPayee;
+        state.students = newStudents;
         saveState();
 
         // Render forms accordingly and show form-view
         $('#dk-step-1-group-setup').hide();
         $('#dk-step-1-form-view').show();
         $('#dk-add-new-student-btn').show();
-
-        // Render forms: using renderFormsForBooking
-        renderFormsForBooking(partOfGroup).done(function() {
+        activeFlow = 'group';
+        // Render forms: using renderFormsForBooking (mark as group flow so title updates)
+        renderFormsForBooking(partOfGroup, true).done(function() {
             // nothing extra
         });
     });
@@ -209,11 +265,44 @@ jQuery(document).ready(function($) {
 
     // Go back from form view
     $wrapper.on('click', '#dk-go-back-btn', function() {
-        // Return to initial screen (or group setup if applicable)
-        $('#dk-step-1-form-view').hide();
-        $('#dk-step-1-initial-view').show();
-        $('#dk-student-forms-container').empty();
-        clearState();
+        // If we came from a group setup, save current inputs WITHOUT validation
+        if (activeFlow === 'group') {
+            const forms = $('#dk-student-forms-container .dk-student-form');
+            const collected = [];
+            forms.each(function(i, form) {
+                const $f = $(form);
+                const fd = {};
+                $f.serializeArray().forEach(function(item){ fd[item.name]=item.value; });
+                fd.agreement_1 = $f.find('input[name="agreement_1"]').is(':checked');
+                fd.agreement_2 = $f.find('input[name="agreement_2"]').is(':checked');
+                const isStudent = $f.closest('.dk-student-form-block').data('form-type') === 'student';
+                collected.push({ data: fd, isStudent: isStudent });
+            });
+
+            // Map collected to state the same way Save Details does, but without validation
+            const firstBlock = $('#dk-student-forms-container .dk-student-form-block').first();
+            const firstType = firstBlock.length ? firstBlock.data('form-type') : null;
+            if (firstType === 'payee') {
+                state.payee = collected[0] ? collected[0].data : {};
+                state.students = collected.slice(1).map(x => x.data);
+            } else {
+                state.students = collected.map(x => x.data);
+                state.payee = collected[0] ? collected[0].data : {};
+            }
+            saveState();
+
+            // Show group setup so user can tweak numbers/membership
+            $('#dk-step-1-form-view').hide();
+            $('#dk-student-forms-container').empty();
+            $('#dk-step-1-group-setup').show();
+        } else {
+            // Non-group flows: clear transient state and return to initial
+            $('#dk-step-1-form-view').hide();
+            $('#dk-student-forms-container').empty();
+            $('#dk-step-1-initial-view').show();
+            clearState();
+            activeFlow = 'initial';
+        }
     });
 
     // Save Details (single flow) and Continue (group flow confirmation handled here)
@@ -234,6 +323,20 @@ jQuery(document).ready(function($) {
             collected.push({ data: fd, isStudent: isStudent });
         });
         if (!valid) { $('#dk-validation-message').text(DKEnrolmentData.messages.validation_error).fadeIn(); return; }
+
+        // Ensure all entered email addresses are unique across payee and students
+        const emails = collected.map(function(c){ return (c.data.email||'').trim().toLowerCase(); }).filter(Boolean);
+        const seen = {};
+        let duplicateFound = false;
+        for (let i=0;i<emails.length;i++) {
+            if (seen[emails[i]]) { duplicateFound = true; break; }
+            seen[emails[i]] = true;
+        }
+        if (duplicateFound) {
+            $('#dk-validation-message').text('Each person must use a unique email address. Please ensure payee and student emails differ.').fadeIn();
+            return;
+        }
+
         $('#dk-validation-message').fadeOut();
 
         // Save into state: heuristics based on form types
@@ -280,10 +383,12 @@ jQuery(document).ready(function($) {
     if (state.payee || (state.students && state.students.length>0)) {
         // Decide rendering mode
         const payeeIsStudent = !state.payee && (state.students && state.students.length>0);
+        // If there are multiple students, assume this was a group flow
+        if (state.students && state.students.length > 1) activeFlow = 'group';
         $('#dk-step-1-initial-view').hide();
         $('#dk-step-1-form-view').show();
         $('#dk-add-new-student-btn').toggle( (state.students.length>1) );
-        renderFormsForBooking(payeeIsStudent);
+        renderFormsForBooking(payeeIsStudent, activeFlow === 'group');
     }
 
     // --- Navigation: goToStep and Step 2 renderer ---
