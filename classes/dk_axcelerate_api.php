@@ -37,7 +37,10 @@ class DK_Axcelerate_API {
 
     private function request_post($path, $payload = array()) {
         $url = $this->base . $path;
-        $args = array('headers' => $this->headers(), 'timeout' => 20, 'body' => wp_json_encode($payload));
+        // Default to JSON payload, but callers can pass already-encoded or arrays
+        $headers = $this->headers();
+        $body = wp_json_encode($payload);
+        $args = array('headers' => $headers, 'timeout' => 20, 'body' => $body);
         $resp = wp_remote_post($url, $args);
         if (is_wp_error($resp)) return new WP_Error('http_error', $resp->get_error_message());
         $code = wp_remote_retrieve_response_code($resp);
@@ -64,7 +67,31 @@ class DK_Axcelerate_API {
      * Expects array with keys like givenName, surname, emailAddress, mobilePhone
      */
     public function create_contact($payload) {
-        return $this->request_post('/api/contact/', $payload);
+        // The Axcelerate create contact endpoint expects form-encoded fields (not JSON)
+        $url = $this->base . '/api/contact/';
+        $headers = $this->headers();
+        // Use form-encoded content type
+        $headers['Content-Type'] = 'application/x-www-form-urlencoded';
+
+        // Ensure parameter names match Axcelerate expectations
+        $form = array();
+        if (isset($payload['givenName'])) $form['givenName'] = $payload['givenName'];
+        if (isset($payload['surname'])) $form['surname'] = $payload['surname'];
+        if (isset($payload['emailAddress'])) $form['emailAddress'] = $payload['emailAddress'];
+        // mobilephone (lowercase) is expected
+        if (isset($payload['mobilephone'])) $form['mobilephone'] = $payload['mobilephone'];
+        if (isset($payload['mobilePhone']) && !isset($form['mobilephone'])) $form['mobilephone'] = $payload['mobilePhone'];
+
+        // Axcelerate expects parameters in the URL query for this endpoint.
+        $url .= (strpos($url, '?') === false ? '?' : '&') . http_build_query($form);
+        $args = array('headers' => $headers, 'timeout' => 20, 'body' => '');
+        $resp = wp_remote_post($url, $args);
+        if (is_wp_error($resp)) return new WP_Error('http_error', $resp->get_error_message());
+        $code = wp_remote_retrieve_response_code($resp);
+        $body = wp_remote_retrieve_body($resp);
+        $data = json_decode($body, true);
+        if ($code >= 200 && $code < 300) return $data;
+        return new WP_Error('api_error', 'HTTP ' . $code . ' - ' . substr($body,0,500));
     }
 }
 
