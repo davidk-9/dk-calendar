@@ -447,11 +447,13 @@ jQuery(document).ready(function($) {
                 html += '<li><span>Last Name:</span><span>' + (student.last_name||'') + '</span></li>';
                 html += '<li><span>Email:</span><span>' + (student.email||'') + '</span></li>';
                 html += '<li><span>Mobile:</span><span>' + (student.mobile||'') + '</span></li>';
-                html += '<li class="dk-student-fee"><span>Original Fee:</span><span>$' + originalFee.toFixed(2) + '</span></li>';
                 if (discountAmount > 0) {
+                    html += '<li class="dk-student-fee"><span>Original Fee:</span><span>$' + originalFee.toFixed(2) + '</span></li>';
                     html += '<li class="dk-student-discount"><span>Discount:</span><span>-$' + discountAmount.toFixed(2) + '</span></li>';
+                    html += '<li class="dk-student-final-fee"><span>Final Fee:</span><span>$' + finalFee.toFixed(2) + '</span></li>';
+                } else {
+                    html += '<li class="dk-student-fee"><span>Fee:</span><span>$' + finalFee.toFixed(2) + '</span></li>';
                 }
-                html += '<li class="dk-student-final-fee"><span>Final Fee:</span><span>$' + finalFee.toFixed(2) + '</span></li>';
                 html += '</ul>';
                 html += '</div>';
             });
@@ -471,11 +473,15 @@ jQuery(document).ready(function($) {
             });
         }
         const discountTotal = Math.max(0, originalTotal - finalTotal);
-        html += '<div class="dk-totals-row">';
-        html += '<h4>Original Total: $' + originalTotal.toFixed(2) + '</h4>';
-        html += '<h4>Discount Total: -$' + discountTotal.toFixed(2) + '</h4>';
-        html += '<h3 class="dk-summary-total">Final Total: $' + finalTotal.toFixed(2) + '</h3>';
-        html += '</div>';
+        if (discountTotal > 0) {
+            html += '<div class="dk-totals-row">';
+            html += '<h4>Original Total: $' + originalTotal.toFixed(2) + '</h4>';
+            html += '<h4>Discount Total: -$' + discountTotal.toFixed(2) + '</h4>';
+            html += '<h3 class="dk-summary-total">Final Total: $' + finalTotal.toFixed(2) + '</h3>';
+            html += '</div>';
+        } else {
+            html += '<h3 class="dk-summary-total">Total Fee: $' + finalTotal.toFixed(2) + '</h3>';
+        }
 
         // Promo code input (lock and reflect applied state)
         const appliedPromo = (state.promo && state.promo.code) ? state.promo.code : '';
