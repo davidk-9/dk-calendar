@@ -12,6 +12,8 @@ jQuery(document).ready(function($) {
 
     // State shape: { payee: {...} | null, students: [ {...}, ... ] }
     let state = loadState();
+    // transient flag to avoid duplicate promo re-application runs during render
+    let promoResyncing = false;
     // Track which top-level flow is active: 'initial' | 'single' | 'someone' | 'group-setup' | 'group'
     let activeFlow = 'initial';
 
@@ -491,7 +493,11 @@ jQuery(document).ready(function($) {
         html += '<input type="text" id="dk-promo-code" name="promo_code" style="width:160px;margin-right:8px;" ' + (promoLocked ? 'disabled' : '') + ' value="' + (appliedPromo) + '" />';
         html += '<button id="dk-apply-promo-btn" class="dk-btn dk-btn-secondary">' + (promoLocked ? 'Clear Promotion Code' : 'Apply Promotion Code') + '</button>';
         html += '</div>';
-        html += '<div id="dk-promo-status" class="dk-promo-status" style="margin-top:8px;color:#333;display:block;"></div>';
+        // Promo status - persist and render from state.promo_status so it survives re-renders
+        const promoStatus = (state.promo_status && typeof state.promo_status === 'object') ? state.promo_status : {};
+        const promoStatusText = promoStatus.text || '';
+        const promoStatusColor = promoStatus.color || '#333';
+        html += '<div id="dk-promo-status" class="dk-promo-status" style="margin-top:8px;color:' + promoStatusColor + ';display:block;">' + promoStatusText + '</div>';
 
         // Pay button placeholder
         html += '<div class="dk-button-group dk-nav-buttons" style="margin-top:20px;">';
@@ -500,26 +506,137 @@ jQuery(document).ready(function($) {
         html += '</div>';
 
         $step2.append(html);
-        // Ensure promo status is visible and blank by default
-        $('#dk-promo-status').show().text('');
+               
 
         // Attach handlers
         $('#dk-back-to-details-btn').on('click', function(){ goToStep(1); });
 
+        // If a promo code is already applied in state, but some students lack discount data,
+        // automatically re-check discounts so the UI shows accurate fees after coming back from step 1.
+        if (state.promo && state.promo.code && !promoResyncing) {
+            // find student indices that are missing discount info
+            const missing = [];
+            if (state.students && state.students.length) {
+                state.students.forEach(function(s, i){
+                    const hasDiscount = (typeof s.discount_id !== 'undefined' && s.discount_id !== null && s.discount_id > 0) || (typeof s.revised_price !== 'undefined' && s.revised_price !== null);
+                    if (!hasDiscount) missing.push(i);
+                });
+            }
+
+            if (missing.length > 0) {
+                promoResyncing = true;
+                const promoCode = state.promo.code;
+                state.promo_status = { text: 'Re-applying promotion to students...', color: '#333' };
+                saveState();
+                $('#dk-promo-status').css('color', state.promo_status.color).text(state.promo_status.text);
+                $('#dk-apply-promo-btn').prop('disabled', true);
+
+                // First: ensure contacts exist for missing students (create/search)
+                const contactOps = [];
+                missing.forEach(function(idx){
+                    const student = state.students[idx];
+                    const contactID = student.ax_contact_id || student.ax_contact || '';
+                    if (!contactID) {
+                        contactOps.push($.ajax({
+                            url: DKEnrolmentData.ajax_url,
+                            type: 'POST',
+                            data: {
+                                action: 'dk_sync_contact',
+                                given_name: student.given_name || student.givenName || '',
+                                last_name: student.last_name || student.lastName || student.surname || '',
+                                email: student.email || student.emailAddress || '',
+                                mobile: student.mobile || student.mobilephone || ''
+                            }
+                        }).done(function(r){
+                            if (r && r.success && r.data && r.data.contactID) {
+                                state.students[idx].ax_contact_id = r.data.contactID;
+                            } else {
+                                console.warn('Contact sync returned no-success for student', idx, r);
+                            }
+                        }).fail(function(xhr){ console.error('Contact sync failed for student', idx, xhr && xhr.responseText); }));
+                    }
+                });
+
+                // After contacts are synced (or immediately if none needed), run discount checks
+                $.when.apply($, contactOps.length ? contactOps : [$.Deferred().resolve()]).then(function(){
+                    const discountRequests = [];
+                    missing.forEach(function(idx){
+                        const student = state.students[idx];
+                        const contactID = student.ax_contact_id || student.ax_contact || 0;
+                        if (!contactID) {
+                            console.warn('Skipping discount recheck for student', idx, 'still missing contactID');
+                            return;
+                        }
+                        discountRequests.push($.ajax({
+                            url: DKEnrolmentData.ajax_url,
+                            type: 'POST',
+                            data: {
+                                action: 'dk_check_discount',
+                                contactID: contactID,
+                                instanceID: INSTANCE_ID,
+                                originalPrice: COURSE_COST_RAW,
+                                promoCode: promoCode
+                            }
+                        }).done(function(r){
+                            if (r && r.success && r.data) {
+                                const revised = parseFloat(r.data.revisedPrice);
+                                const discount = r.data.discount || {};
+                                state.students[idx].revised_price = revised;
+                                if (discount.DISCOUNTID && discount.DISCOUNTID > 0) state.students[idx].discount_id = discount.DISCOUNTID;
+                            } else {
+                                console.warn('Discount recheck returned no-success for student', idx, r);
+                            }
+                        }).fail(function(xhr){ console.error('Discount recheck AJAX failed for student', idx, xhr && xhr.responseText); }));
+                    });
+
+                    // Wait for all discount checks to complete
+                    return $.when.apply($, discountRequests.length ? discountRequests : [$.Deferred().resolve()]);
+                }, function(){
+                    // contact sync failed for one or more students
+                    state.promo_status = { text: 'Failed to sync one or more student contacts. See console.', color: 'red' };
+                    saveState();
+                    promoResyncing = false;
+                    $('#dk-apply-promo-btn').prop('disabled', false);
+                    renderStep2();
+                    // return a rejected deferred to stop further processing
+                    const d = $.Deferred(); d.reject(); return d.promise();
+                }).always(function(){
+                    // After discount rechecks finished (or if none needed)
+                    saveState();
+                    // recompute applied count
+                    let appliedCount = 0;
+                    if (state.students && state.students.length) {
+                        state.students.forEach(function(s){ if (s.discount_id && s.discount_id > 0) appliedCount++; });
+                    }
+                    if (appliedCount > 0) {
+                        state.promo_status = { text: 'Promotion applied: ' + appliedCount + ' student(s) received a discount.', color: 'green' };
+                    } else {
+                        state.promo_status = { text: 'Code does not exist, is invalid or has expired.', color: 'red' };
+                    }
+                    saveState();
+                    promoResyncing = false;
+                    $('#dk-apply-promo-btn').prop('disabled', false);
+                    // re-render to show updated fees/status
+                    renderStep2();
+                });
+            }
+        }
+
         // Apply / Clear promotion code button handler
         $('#dk-apply-promo-btn').off('click').on('click', function(){
             // If promo already applied, this button clears it
-            if (state.promo && state.promo.code) {
-                // Clear discounts and promo
-                if (state.students && state.students.length) {
-                    state.students.forEach(function(s){ delete s.revised_price; delete s.discount_id; });
+                if (state.promo && state.promo.code) {
+                    // Clear discounts and promo
+                    if (state.students && state.students.length) {
+                        state.students.forEach(function(s){ delete s.revised_price; delete s.discount_id; });
+                    }
+                    delete state.promo;
+                    // persist a transient promo status so renderStep2 can show the cleared message
+                    state.promo_status = { text: 'Promotion cleared.', color: '#333' };
+                    saveState();
+                    renderStep2();
+                    return;
                 }
-                delete state.promo;
-                saveState();
-                $('#dk-promo-status').css('color','#333').text('Promotion cleared.');
-                renderStep2();
-                return;
-            }
 
             const promo = $('#dk-promo-code').val().trim();
             if (!promo) { alert('Please enter a promo code.'); return; }
@@ -570,11 +687,14 @@ jQuery(document).ready(function($) {
             $('#dk-apply-promo-btn').prop('disabled', true);
 
             ensureContacts().done(function(res){
-                if (res && res.success && res.data && res.data.state) {
+                    if (res && res.success && res.data && res.data.state) {
                     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(res.data.state));
                     state = res.data.state;
                 } else if (res && !res.success) {
                     console.error('Contact sync errors:', res.data && res.data.errors ? res.data.errors : res.data);
+                    // persist the error so subsequent renderStep2 won't erase it
+                    state.promo_status = { text: 'Contact sync returned errors. See console.', color: '#333' };
+                    saveState();
                     $('#dk-promo-status').text('Contact sync returned errors. See console.');
                     $('#dk-apply-promo-btn').prop('disabled', false);
                     return;
@@ -620,10 +740,13 @@ jQuery(document).ready(function($) {
                     if (appliedCount > 0) {
                         // persist applied promo code so UI locks
                         state.promo = { code: promo };
+                        state.promo_status = { text: 'Promotion applied: ' + appliedCount + ' student(s) received a discount.', color: 'green' };
                         saveState();
-                        $('#dk-promo-status').css('color','green').text('Promotion applied: ' + appliedCount + ' student(s) received a discount.');
+                        $('#dk-promo-status').css('color','green').text(state.promo_status.text);
                     } else {
-                        $('#dk-promo-status').css('color','red').text('Code does not exist, is invalid or has expired.');
+                        state.promo_status = { text: 'Code does not exist, is invalid or has expired.', color: 'red' };
+                        saveState();
+                        $('#dk-promo-status').css('color','red').text(state.promo_status.text);
                     }
                     $('#dk-apply-promo-btn').prop('disabled', false);
                     renderStep2();
