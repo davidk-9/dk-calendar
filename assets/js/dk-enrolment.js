@@ -491,7 +491,7 @@ jQuery(document).ready(function($) {
         html += '<input type="text" id="dk-promo-code" name="promo_code" style="width:160px;margin-right:8px;" ' + (promoLocked ? 'disabled' : '') + ' value="' + (appliedPromo) + '" />';
         html += '<button id="dk-apply-promo-btn" class="dk-btn dk-btn-secondary">' + (promoLocked ? 'Clear Promotion Code' : 'Apply Promotion Code') + '</button>';
         html += '</div>';
-        html += '<div id="dk-promo-status" class="dk-promo-status" style="margin-top:8px;color:#333;"></div>';
+        html += '<div id="dk-promo-status" class="dk-promo-status" style="margin-top:8px;color:#333;display:block;"></div>';
 
         // Pay button placeholder
         html += '<div class="dk-button-group dk-nav-buttons" style="margin-top:20px;">';
@@ -500,6 +500,8 @@ jQuery(document).ready(function($) {
         html += '</div>';
 
         $step2.append(html);
+        // Ensure promo status is visible and blank by default
+        $('#dk-promo-status').show().text('');
 
         // Attach handlers
         $('#dk-back-to-details-btn').on('click', function(){ goToStep(1); });
