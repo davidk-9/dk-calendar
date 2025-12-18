@@ -621,7 +621,7 @@ jQuery(document).ready(function($) {
                         saveState();
                         $('#dk-promo-status').css('color','green').text('Promotion applied: ' + appliedCount + ' student(s) received a discount.');
                     } else {
-                        $('#dk-promo-status').css('color','red').text('No discounts applied — code invalid or expired.');
+                        $('#dk-promo-status').css('color','red').text('Code does not exist, is invalid or has expired.');
                     }
                     $('#dk-apply-promo-btn').prop('disabled', false);
                     renderStep2();
