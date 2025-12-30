@@ -281,7 +281,29 @@ function dk_ajax_sync_contact() {
 
     if ( is_array($search) && count($search) > 0 ) {
         $first = $search[0];
-        wp_send_json_success( array('contactID' => intval($first['CONTACTID'] ?? 0)) );
+        $contactID = intval($first['CONTACTID'] ?? 0);
+        
+        // Contact found - check if we need to update the mobile phone
+        if ( !empty($mobile) && $contactID > 0 ) {
+            // Get the full contact details to check current mobile
+            $existingContact = $api->get_contact($contactID);
+            
+            if ( !is_wp_error($existingContact) && is_array($existingContact) ) {
+                $existingMobile = trim($existingContact['MOBILEPHONE'] ?? '');
+                $newMobile = trim($mobile);
+                
+                // Update if mobile is different (and not empty)
+                if ( !empty($newMobile) && $existingMobile !== $newMobile ) {
+                    $updateResult = $api->update_contact($contactID, array('mobilephone' => $newMobile));
+                    if ( is_wp_error($updateResult) ) {
+                        // Log the error but don't fail the whole sync - we still have a valid contactID
+                        error_log('Failed to update mobile for contact ' . $contactID . ': ' . $updateResult->get_error_message());
+                    }
+                }
+            }
+        }
+        
+        wp_send_json_success( array('contactID' => $contactID) );
         wp_die();
     }
 
@@ -438,5 +460,91 @@ function dk_ajax_sync_contacts() {
         wp_send_json_success( array('message' => 'Contacts synced', 'state' => $state) );
     }
 
+    wp_die();
+}
+
+/**
+ * Server-side proxy: Enrol / add student to invoice
+ * Expects POST params mapping to Axcelerate /api/course/enrol query params.
+ */
+add_action( 'wp_ajax_dk_proxy_enrol', 'dk_ajax_proxy_enrol' );
+add_action( 'wp_ajax_nopriv_dk_proxy_enrol', 'dk_ajax_proxy_enrol' );
+function dk_ajax_proxy_enrol() {
+    $allowed = array('instanceID','type','contactID','invoiceID','cost','discountIDList','payerID','tentative','suppressNotifications');
+    $params = array();
+    foreach ($allowed as $k) {
+        if ( isset($_POST[$k]) ) $params[$k] = sanitize_text_field($_POST[$k]);
+    }
+
+    if ( empty($params['instanceID']) || empty($params['contactID']) ) {
+        wp_send_json_error(array('message' => 'instanceID and contactID are required')); wp_die();
+    }
+
+    $api = new DK_Axcelerate_API();
+    $res = $api->enrol_course_query($params);
+    if ( is_wp_error($res) ) {
+        wp_send_json_error(array('message' => $res->get_error_message(), 'raw' => $res->get_error_data())); wp_die();
+    }
+    wp_send_json_success($res);
+    wp_die();
+}
+
+
+/**
+ * Server-side proxy: Fetch invoice details
+ */
+add_action( 'wp_ajax_dk_proxy_invoice', 'dk_ajax_proxy_invoice' );
+add_action( 'wp_ajax_nopriv_dk_proxy_invoice', 'dk_ajax_proxy_invoice' );
+function dk_ajax_proxy_invoice() {
+    $invoiceID = sanitize_text_field($_POST['invoiceID'] ?? '');
+    if ( empty($invoiceID) ) { wp_send_json_error(array('message'=>'invoiceID required')); wp_die(); }
+    $api = new DK_Axcelerate_API();
+    $res = $api->get_invoice_by_id($invoiceID);
+    if ( is_wp_error($res) ) { wp_send_json_error(array('message'=>$res->get_error_message(),'raw'=>$res->get_error_data())); wp_die(); }
+    wp_send_json_success($res);
+    wp_die();
+}
+
+
+/**
+ * Server-side proxy: Request hosted payment form
+ */
+add_action( 'wp_ajax_dk_proxy_payment_form', 'dk_ajax_proxy_payment_form' );
+add_action( 'wp_ajax_nopriv_dk_proxy_payment_form', 'dk_ajax_proxy_payment_form' );
+function dk_ajax_proxy_payment_form() {
+    $reference = sanitize_text_field($_POST['reference'] ?? '');
+    $invoiceGUID = sanitize_text_field($_POST['invoiceGUID'] ?? '');
+    $redirectURL = esc_url_raw($_POST['redirectURL'] ?? '');
+    $cancelURL = esc_url_raw($_POST['cancelURL'] ?? '');
+
+    if ( empty($reference) || empty($invoiceGUID) ) { wp_send_json_error(array('message'=>'reference and invoiceGUID required')); wp_die(); }
+
+    $api = new DK_Axcelerate_API();
+    $query = array(
+        'reference' => $reference,
+        'invoiceGUID' => $invoiceGUID,
+    );
+    if ($redirectURL) $query['redirectURL'] = $redirectURL;
+    if ($cancelURL) $query['cancelURL'] = $cancelURL;
+
+    $res = $api->get_payment_form($query);
+    if ( is_wp_error($res) ) { wp_send_json_error(array('message'=>$res->get_error_message(),'raw'=>$res->get_error_data())); wp_die(); }
+    wp_send_json_success($res);
+    wp_die();
+}
+
+
+/**
+ * Server-side proxy: Check payment status by reference
+ */
+add_action( 'wp_ajax_dk_proxy_payment_ref', 'dk_ajax_proxy_payment_ref' );
+add_action( 'wp_ajax_nopriv_dk_proxy_payment_ref', 'dk_ajax_proxy_payment_ref' );
+function dk_ajax_proxy_payment_ref() {
+    $reference = sanitize_text_field($_POST['reference'] ?? '');
+    if ( empty($reference) ) { wp_send_json_error(array('message'=>'reference required')); wp_die(); }
+    $api = new DK_Axcelerate_API();
+    $res = $api->get_payment_ref($reference);
+    if ( is_wp_error($res) ) { wp_send_json_error(array('message'=>$res->get_error_message(),'raw'=>$res->get_error_data())); wp_die(); }
+    wp_send_json_success($res);
     wp_die();
 }

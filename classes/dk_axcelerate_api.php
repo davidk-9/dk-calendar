@@ -95,6 +95,47 @@ class DK_Axcelerate_API {
     }
 
     /**
+     * Get a contact by contactID using GET /api/contact/{contactID}
+     */
+    public function get_contact($contactID) {
+        $path = '/api/contact/' . intval($contactID);
+        return $this->request_get($path, array());
+    }
+
+    /**
+     * Update a contact using PUT /api/contact/{contactID}
+     * Expects array with keys to update (e.g., mobilephone)
+     */
+    public function update_contact($contactID, $payload) {
+        $url = $this->base . '/api/contact/' . intval($contactID);
+        $headers = $this->headers();
+        
+        // Axcelerate expects parameters in the URL query for PUT
+        $form = array();
+        if (isset($payload['mobilephone'])) $form['mobilephone'] = $payload['mobilephone'];
+        if (isset($payload['mobilePhone']) && !isset($form['mobilephone'])) $form['mobilephone'] = $payload['mobilePhone'];
+        
+        if (!empty($form)) {
+            $url .= (strpos($url, '?') === false ? '?' : '&') . http_build_query($form);
+        }
+        
+        $args = array(
+            'headers' => $headers,
+            'timeout' => 20,
+            'method' => 'PUT',
+            'body' => ''
+        );
+        
+        $resp = wp_remote_request($url, $args);
+        if (is_wp_error($resp)) return new WP_Error('http_error', $resp->get_error_message());
+        $code = wp_remote_retrieve_response_code($resp);
+        $body = wp_remote_retrieve_body($resp);
+        $data = json_decode($body, true);
+        if ($code >= 200 && $code < 300) return $data;
+        return new WP_Error('api_error', 'HTTP ' . $code . ' - ' . substr($body,0,500));
+    }
+
+    /**
      * Check course discounts for a contact and promo code
      * Expected query params: contactID, type, instanceID, originalPrice, PromoCode
      */
@@ -107,6 +148,48 @@ class DK_Axcelerate_API {
             'PromoCode' => $promoCode
         );
         return $this->request_get('/api/course/discounts', $query);
+    }
+
+    /**
+     * Enrol a contact into a course (creates or adds to invoice).
+     * Parameters should be provided as an associative array and will be sent as query params.
+     * Example keys: instanceID, type, contactID, invoiceID, cost, discountIDList, payerID
+     */
+    public function enrol_course_query($params = array()) {
+        $url = $this->base . '/api/course/enrol';
+        if (!empty($params)) $url .= (strpos($url, '?') === false ? '?' : '&') . http_build_query($params);
+        $args = array('headers' => $this->headers(), 'timeout' => 20, 'body' => '');
+        $resp = wp_remote_post($url, $args);
+        if (is_wp_error($resp)) return new WP_Error('http_error', $resp->get_error_message());
+        $code = wp_remote_retrieve_response_code($resp);
+        $body = wp_remote_retrieve_body($resp);
+        $data = json_decode($body, true);
+        if ($code >= 200 && $code < 300) return $data;
+        return new WP_Error('api_error', 'HTTP ' . $code . ' - ' . substr($body,0,500));
+    }
+
+    /**
+     * Fetch invoice details by invoice ID
+     */
+    public function get_invoice_by_id($invoiceID) {
+        $path = '/api/accounting/invoice/' . rawurlencode($invoiceID);
+        return $this->request_get($path, array());
+    }
+
+    /**
+     * Request the hosted payment form for an invoice reference
+     * Expected query params: reference, invoiceGUID, redirectURL, cancelURL
+     */
+    public function get_payment_form($query = array()) {
+        return $this->request_get('/api/accounting/ecommerce/payment/form', $query);
+    }
+
+    /**
+     * Query payment status by reference
+     */
+    public function get_payment_ref($reference) {
+        $path = '/api/accounting/ecommerce/payment/ref/' . rawurlencode($reference);
+        return $this->request_get($path, array());
     }
 }
 

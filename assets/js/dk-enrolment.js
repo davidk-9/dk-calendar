@@ -10,6 +10,46 @@ jQuery(document).ready(function($) {
     const SPACES_AVAIL = parseInt($('#dk-step-1').data('spaces-avail')) || 999;
     const INSTANCE_ID = $('#dk-step-1').data('instance-id');
 
+    // API base: prefer configured DKEnrolmentData.api_base when Axcelerate/API sits on another host
+    const API_BASE = (typeof DKEnrolmentData !== 'undefined' && DKEnrolmentData.api_base && DKEnrolmentData.api_base.length)
+        ? DKEnrolmentData.api_base.replace(/\/$/, '')
+        : window.location.origin;
+    // JS proxy helpers: if server-side proxy is available we'll use WP AJAX actions to avoid exposing tokens client-side
+    function proxyEnrol(paramsObj) {
+        // paramsObj is an object of query params (instanceID, type, contactID, invoiceID, cost, discountIDList, payerID...)
+        const data = Object.assign({ action: 'dk_proxy_enrol' }, paramsObj);
+        return $.ajax({ url: DKEnrolmentData.ajax_url, type: 'POST', data: data, dataType: 'json' });
+    }
+    function proxyGetInvoice(invoiceID) {
+        return $.ajax({ url: DKEnrolmentData.ajax_url, type: 'POST', dataType: 'json', data: { action: 'dk_proxy_invoice', invoiceID: invoiceID } });
+    }
+    function proxyGetPaymentForm(reference, invoiceGUID, redirectURL, cancelURL) {
+        return $.ajax({ url: DKEnrolmentData.ajax_url, type: 'POST', dataType: 'json', data: { action: 'dk_proxy_payment_form', reference: reference, invoiceGUID: invoiceGUID, redirectURL: redirectURL, cancelURL: cancelURL } });
+    }
+    function proxyGetPaymentRef(reference) {
+        return $.ajax({ url: DKEnrolmentData.ajax_url, type: 'POST', dataType: 'json', data: { action: 'dk_proxy_payment_ref', reference: reference } });
+    }
+
+    // Normalize WP AJAX wrapped responses ({ success: bool, data: ... }) to underlying data
+    function unwrap(res) {
+        if (res && typeof res === 'object' && ('success' in res)) return res.success ? res.data : res;
+        return res;
+    }
+    // Helper: read invoice/ref from URL query params
+    function getInvoiceRefFromUrl() {
+        try {
+            const qs = window.location.search.replace(/^\?/, '');
+            if (!qs) return '';
+            const parts = qs.split('&');
+            for (let i = 0; i < parts.length; i++) {
+                const p = parts[i].split('=');
+                const k = decodeURIComponent(p[0] || '').toLowerCase();
+                const v = typeof p[1] === 'undefined' ? '' : decodeURIComponent(p[1]);
+                if (k === 'ref' || k === 'invoiceguid' || k === 'invguid') return v;
+            }
+        } catch (e) { /* ignore */ }
+        return '';
+    }
     // State shape: { payee: {...} | null, students: [ {...}, ... ] }
     let state = loadState();
     // transient flag to avoid duplicate promo re-application runs during render
@@ -45,6 +85,67 @@ jQuery(document).ready(function($) {
         return true;
     }
 
+    // Helper to check if two people are the same (by email, first name, last name)
+    function isSamePerson(person1, person2) {
+        if (!person1 || !person2) return false;
+        const email1 = (person1.email || person1.emailAddress || '').trim().toLowerCase();
+        const email2 = (person2.email || person2.emailAddress || '').trim().toLowerCase();
+        const firstName1 = (person1.given_name || person1.givenName || '').trim().toLowerCase();
+        const firstName2 = (person2.given_name || person2.givenName || '').trim().toLowerCase();
+        const lastName1 = (person1.last_name || person1.lastName || person1.surname || '').trim().toLowerCase();
+        const lastName2 = (person2.last_name || person2.lastName || person2.surname || '').trim().toLowerCase();
+        return email1 && email2 && email1 === email2 && firstName1 === firstName2 && lastName1 === lastName2;
+    }
+
+    // Modal helper functions
+    function showProcessModal(message) {
+        let $modal = $('#dk-process-modal');
+        if (!$modal.length) {
+            $modal = $('<div id="dk-process-modal" class="dk-modal-overlay"></div>');
+            const $content = $('<div class="dk-modal-content" style="text-align:center;"><div id="dk-process-message" style="margin-bottom:20px;"></div><button id="dk-process-close" class="dk-btn dk-btn-secondary" style="display:none;">Close</button></div>');
+            $modal.append($content);
+            $('body').append($modal);
+            
+            $('#dk-process-close').on('click', function() {
+                if (confirm('Are you sure you want to close this? The process may still be running.')) {
+                    $modal.hide();
+                }
+            });
+        }
+        $('#dk-process-message').html(message);
+        $('#dk-process-close').hide();
+        $modal.show();
+        return $modal;
+    }
+
+    function updateProcessModal(message) {
+        $('#dk-process-message').html(message);
+    }
+
+    function closeProcessModal() {
+        $('#dk-process-modal').hide();
+    }
+
+    function enableProcessModalClose() {
+        $('#dk-process-close').show();
+    }
+
+    function showErrorModal(message, onOkCallback) {
+        let $modal = $('#dk-error-modal');
+        if (!$modal.length) {
+            $modal = $('<div id="dk-error-modal" class="dk-modal-overlay"></div>');
+            const $content = $('<div class="dk-modal-content" style="text-align:center;"><div id="dk-error-message" style="margin-bottom:20px;color:red;"></div><button id="dk-error-ok" class="dk-btn dk-btn-primary">OK</button></div>');
+            $modal.append($content);
+            $('body').append($modal);
+        }
+        $('#dk-error-message').html(message);
+        $('#dk-error-ok').off('click').on('click', function() {
+            $modal.hide();
+            if (onOkCallback) onOkCallback();
+        });
+        $modal.show();
+    }
+
     // Render helpers: request a form HTML from server
     function requestForm(index, formType = 'student', title = null, data = {}, isLocked = false, showDelete = false, syncAppend = true) {
         return $.ajax({
@@ -70,7 +171,7 @@ jQuery(document).ready(function($) {
         if (isGroupFlow) {
             $('#dk-form-view-title').text('Booking for a Group');
         }
-
+        $container.html('<p class="dk-loading">Loading Details Forms...</p>');
         // Build ordered request list so we can append responses in sequence
         const requests = [];
         if (payeeIsStudent) {
@@ -89,10 +190,16 @@ jQuery(document).ready(function($) {
 
         // Execute requests sequentially to preserve display order
         let chain = $.Deferred().resolve();
-        requests.forEach(function(req) {
+        requests.forEach(function(req, idx) {
             chain = chain.then(function() {
                 return requestForm(req.index, req.type, req.title, req.data, false, req.showDelete).done(function(r) {
-                    $container.append(r.data.html);
+                    if (idx === 0) {
+                        // First form: clear loading message and add form
+                        $container.empty().append(r.data.html);
+                    } else {
+                        // Subsequent forms: just append
+                        $container.append(r.data.html);
+                    }
                 }).fail(function() {
                     $container.append('<p class="dk-loading">Failed to load a form.</p>');
                 });
@@ -393,6 +500,47 @@ jQuery(document).ready(function($) {
         renderFormsForBooking(payeeIsStudent, activeFlow === 'group');
     }
 
+    // Detect return from hosted checkout (e.g. Stripe) via URL query params
+    // If a `ref` (invoice GUID) is present, persist it and open Step 3 so the
+    // existing renderStep3() logic will auto-check payment/ref via the proxy.
+    (function handleReturnFromHostedCheckout(){
+        function getQueryParams() {
+            const params = {};
+            const qs = window.location.search.replace(/^\?/, '');
+            if (!qs) return params;
+            qs.split('&').forEach(function(pair){
+                if (!pair) return;
+                const parts = pair.split('=');
+                const k = decodeURIComponent(parts[0] || '');
+                const v = typeof parts[1] === 'undefined' ? '' : decodeURIComponent(parts[1]);
+                if (k) params[k] = v;
+            });
+            return params;
+        }
+
+        try {
+            const qp = getQueryParams();
+            const ref = qp.ref || qp.invoiceGUID || qp.invguid || '';
+            const st = (qp.state || '').toLowerCase();
+            if (ref) {
+                // Persist invoiceGUID to state so the first check can run.
+                state.invoiceGUID = ref;
+                saveState();
+                console.debug('Detected hosted-checkout return: ref=', ref, 'state=', st);
+                // Preserve invoice GUID in the URL so re-attempts can rely on it.
+                try {
+                    const qs = '?ref=' + encodeURIComponent(ref) + (st ? ('&state=' + encodeURIComponent(st)) : '');
+                    const clean = window.location.origin + window.location.pathname + qs + window.location.hash;
+                    history.replaceState({}, document.title, clean);
+                } catch (e) { /* ignore */ }
+                // Move user to Step 3 which will trigger the payment/ref check
+                goToStep(3);
+            }
+        } catch (e) {
+            console.error('handleReturnFromHostedCheckout error', e);
+        }
+    })();
+
     // --- Navigation: goToStep and Step 2 renderer ---
     function goToStep(step) {
         if (step < 1 || step > 3) return;
@@ -407,6 +555,282 @@ jQuery(document).ready(function($) {
         if (step === 2) {
             renderStep2();
         }
+        if (step === 3) {
+            renderStep3();
+        }
+    }
+
+    // Render Step 3: payment / result viewer
+    function renderStep3() {
+        const $step3 = $('#dk-step-3').empty();
+        let html = '';
+        html += '<div class="dk-summary-section">';
+        html += '<h3>Payment & Confirmation</h3>';
+        html += '<div class="dk-title-line"></div>';
+        html += '<p id="dk-payment-status-message">Verifying payment status...</p>';
+        html += '</div>';
+
+        html += '<div style="margin-top:12px;">';
+        html += '<button id="dk-check-payment-status" class="dk-btn dk-btn-secondary">Check Payment Status</button>';
+        html += '</div>';
+
+        $step3.append(html);
+
+        $('#dk-check-payment-status').off('click').on('click', function(){
+            checkPaymentAndFinalize();
+        });
+
+        // Auto-check if we already have an invoiceGUID (either in state or URL)
+        if (state.invoiceGUID || getInvoiceRefFromUrl()) {
+            $('#dk-check-payment-status').trigger('click');
+        }
+    }
+
+    // Check payment status and finalize enrollments if paid
+    function checkPaymentAndFinalize() {
+        const ref = state.invoiceGUID || getInvoiceRefFromUrl() || '';
+        if (!ref) {
+            $('#dk-payment-status-message').text('No invoice GUID available to check.');
+            return;
+        }
+        
+        // Show modal while verifying
+        showProcessModal('Verifying payment status from Stripe...');
+        
+        // use proxy that keeps tokens server-side
+        proxyGetPaymentRef(ref).done(function(r){
+            const payload = unwrap(r);
+            // Log to console instead of showing in UI
+            console.log('Payment Status Response:', JSON.stringify(payload, null, 2));
+            
+            try {
+                const stateVal = payload && payload.STATE ? payload.STATE.toLowerCase() : null;
+
+                    if (stateVal === 'paid') {
+                        // Payment confirmed - now finalize all enrollments
+                        updateProcessModal('Payment confirmed! Finalizing enrollments...');
+                        
+                        const students = state.students || [];
+                        const payeeContact = state.payee ? (state.payee.ax_contact_id || state.payee.ax_contact) : null;
+                        const invoiceID = state.invoiceID || '';
+                        
+                        if (!students.length || !invoiceID) {
+                            console.error('Cannot finalize: missing students or invoiceID', { students, invoiceID });
+                            closeProcessModal();
+                            $('#dk-payment-status-message').html('<strong style="color:green;">Payment successful — thank you!</strong><br>Your enrollment is complete.');
+                            try { clearState(); } catch (e) { console.error('Failed to clear state after paid', e); }
+                            $('#dk-check-payment-status').prop('disabled', true).hide();
+                            $('#dk-payment-form-container, #dk-external-payment-form').remove();
+                            return;
+                        }
+                        
+                        // Finalize all students with tentative=false and suppressNotifications=false
+                        const finalizeOps = [];
+                        students.forEach(function(student, idx) {
+                            const contactID = student.ax_contact_id || student.ax_contact || 0;
+                            if (!contactID) {
+                                console.warn('Skipping finalization for student without contactID at index', idx);
+                                return;
+                            }
+                            
+                            const params = [];
+                            params.push('instanceID=' + encodeURIComponent(INSTANCE_ID));
+                            params.push('type=w');
+                            params.push('contactID=' + encodeURIComponent(contactID));
+                            params.push('invoiceID=' + encodeURIComponent(invoiceID));
+                            params.push('tentative=0');
+                            params.push('suppressNotifications=0');
+                            if (payeeContact && payeeContact !== contactID) params.push('payerID=' + encodeURIComponent(payeeContact));
+                            if (typeof student.revised_price !== 'undefined' && student.revised_price !== null) params.push('cost=' + encodeURIComponent(parseFloat(student.revised_price).toFixed(2)));
+                            if (student.discount_id) params.push('discountIDList=' + encodeURIComponent(student.discount_id));
+                            
+                            const paramsObj = {};
+                            params.forEach(function(p){ const parts = p.split('='); paramsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
+                            console.debug('Finalizing enrollment for student', idx, paramsObj);
+                            
+                            finalizeOps.push(proxyEnrol(paramsObj).fail(function(xhr){
+                                console.error('Failed to finalize enrollment for student', idx, xhr && xhr.responseText);
+                            }));
+                        });
+                        
+                        $.when.apply($, finalizeOps).always(function(){
+                            console.log('All enrollments finalized');
+                            closeProcessModal();
+                            $('#dk-payment-status-message').html('<strong style="color:green;">Payment successful — thank you!</strong><br>Your enrollment has been confirmed. You will receive an email shortly with booking confirmation and invoice/receipt.');
+                            try { clearState(); } catch (e) { console.error('Failed to clear state after paid', e); }
+                            $('#dk-check-payment-status').prop('disabled', true).hide();
+                            $('#dk-payment-form-container, #dk-external-payment-form').remove();
+                        });
+                    } else if (stateVal === 'pending') {
+                        // Keep UI available to re-check, but we can clear transient storage as booking is recorded.
+                        closeProcessModal();
+                        $('#dk-payment-status-message').html('<strong style="color:orange;">Payment Pending</strong><br>Your booking is confirmed — payment is pending and may take a while to process. You can check status or close this window; our admin will contact you if there is an issue.');
+                        try { clearState(); } catch (e) { console.error('Failed to clear state after pending', e); }
+                        // Keep check button visible so user can retry checking; rely on URL ref for subsequent checks.
+                        $('#dk-check-payment-status').prop('disabled', false).show();
+                    } else if (stateVal === 'failed') {
+                        // Payment failed — preserve session state so user can retry or cancel enrolment.
+                        closeProcessModal();
+                        $('#dk-payment-status-message').html('<strong style="color:red;">Payment Failed</strong><br>Your booking/enrolment is confirmed but payment has failed. You can try another payment method or cancel your enrolment.');
+                        // Show action buttons: Retry Payment and Cancel Enrolment
+                        const $actions = $(
+                            '<div id="dk-failed-actions" style="margin-top:12px;">'
+                            + '<button id="dk-retry-payment-btn" class="dk-btn dk-btn-primary" style="margin-right:8px;">Pay Now</button>'
+                            + '<button id="dk-cancel-enrolment-btn" class="dk-btn dk-btn-secondary">Cancel Enrolment</button>'
+                            + '</div>'
+                        );
+                        $('#dk-failed-actions').remove();
+                        $('#dk-payment-status-message').after($actions);
+
+                        // Retry: regenerate hosted payment form for the same invoiceGUID/reference
+                        $('#dk-retry-payment-btn').off('click').on('click', function(e){
+                            e.preventDefault();
+                            const refRetry = state.invoiceGUID || getInvoiceRefFromUrl();
+                            if (!refRetry) { alert('No invoice reference available to retry payment.'); return; }
+                            
+                            showProcessModal('Requesting alternate payment methods...');
+                            const currentUrl = window.location.href;
+                            proxyGetPaymentForm(refRetry, refRetry, currentUrl, currentUrl).done(function(formRes){
+                                const formPayload = unwrap(formRes);
+                                if (formPayload && formPayload.SUCCESS && formPayload.DATA) {
+                                    // Auto-redirect to payment form
+                                    updateProcessModal('Redirecting to secure payment...');
+                                    $('#dk-payment-form-container').remove();
+                                    
+                                    const action = formPayload.DATA.ACTION || '';
+                                    const method = (formPayload.DATA.FORMMETHOD || 'POST').toUpperCase();
+                                    const innerHtml = formPayload.DATA.HTML || '';
+                                    
+                                    // Create hidden form
+                                    const $container = $('<div id="dk-payment-form-container" style="display:none;"></div>');
+                                    const $form = $('<form id="dk-external-payment-form"></form>');
+                                    $form.attr('action', action).attr('method', method).html(innerHtml);
+                                    
+                                    if ($form.find('input.ax-ecommerce-pay-btn[type="submit"]').length === 0) {
+                                        const $submit = $('<input type="submit" class="ax-ecommerce-pay-btn" value="Pay Now" />');
+                                        $form.append($submit);
+                                    }
+                                    
+                                    $container.append($form);
+                                    $('body').append($container);
+                                    
+                                    // Close modal before redirect
+                                    setTimeout(function(){
+                                        closeProcessModal();
+                                    }, 1000);
+                                    
+                                    // Auto-submit after script initialization
+                                    setTimeout(function(){
+                                        if (typeof AX_CHECKOUT !== 'undefined' && AX_CHECKOUT.submitPaymentForm) {
+                                            AX_CHECKOUT.submitPaymentForm($form[0]);
+                                        } else {
+                                            $form[0].method = 'get';
+                                            $form[0].submit();
+                                        }
+                                    }, 1500);
+                                } else {
+                                    updateProcessModal('Failed to obtain payment form. See console.');
+                                    enableProcessModalClose();
+                                    console.error('Retry payment form error', formPayload);
+                                }
+                            }).fail(function(xhr){ 
+                                console.error('Retry payment form request failed', xhr && xhr.responseText); 
+                                updateProcessModal('Failed to obtain payment form.');
+                                enableProcessModalClose();
+                            });
+                        });
+
+                        // Cancel enrolment: call API for each student, clear local state regardless
+                        $('#dk-cancel-enrolment-btn').off('click').on('click', function(e){
+                            e.preventDefault();
+                            if (!confirm('Cancel enrolment? This will notify administrators to process cancellation.')) return;
+
+                            showProcessModal('Cancelling enrolment...');
+
+                            const students = state.students || [];
+                            const ops = [];
+                            const failures = [];
+
+                            if (!students.length) {
+                                // Nothing to cancel — still clear local state and inform user
+                                clearState();
+                                closeProcessModal();
+                                $('#dk-payment-status-message').text('Your booking has been cancelled.');
+                                console.debug('Cancel enrolment: no students found in state to cancel.');
+                                $('#dk-payment-form-container, #dk-external-payment-form').remove();
+                                $('#dk-check-payment-status').prop('disabled', true).hide();
+                                $('#dk-failed-actions').remove();
+                                return;
+                            }
+
+                            students.forEach(function(s, idx){
+                                const contactID = s.ax_contact_id || s.ax_contact || s.contactID || 0;
+                                if (!contactID) {
+                                    failures.push({ idx: idx, reason: 'missing contactID', student: s });
+                                    console.error('Cancellation skipped: missing contactID for student index', idx, s);
+                                    return;
+                                }
+
+                                const ajax = $.ajax({
+                                    url: API_BASE + '/api/course/enrolment',
+                                    type: 'POST',
+                                    dataType: 'json',
+                                    data: {
+                                        instanceID: INSTANCE_ID,
+                                        contactID: contactID,
+                                        type: 'w',
+                                        logType: 'Cancelled'
+                                    }
+                                }).done(function(res){
+                                    let r = res;
+                                    if (typeof r === 'string') {
+                                        try { r = JSON.parse(r); } catch (e) { /* ignore parse error */ }
+                                    }
+                                    const statusVal = (r && (r.STATUS || r.Status || r.status)) ? String(r.STATUS || r.Status || r.status).toLowerCase() : '';
+                                    if (statusVal !== 'success') {
+                                        failures.push({ idx: idx, contactID: contactID, response: r });
+                                        console.error('Cancellation API returned non-success for contact', contactID, r);
+                                    }
+                                }).fail(function(xhr){
+                                    failures.push({ idx: idx, contactID: contactID, responseText: xhr && xhr.responseText });
+                                    console.error('Cancellation AJAX failed for contact', contactID, xhr && xhr.responseText);
+                                });
+
+                                ops.push(ajax);
+                            });
+
+                            // Wait for all cancellation ops to finish
+                            $.when.apply($, ops.length ? ops : [$.Deferred().resolve()]).always(function(){
+                                // Clear client-side state regardless of cancellation outcomes
+                                try { clearState(); } catch (e) { console.error('Failed to clear state after cancellation', e); }
+
+                                closeProcessModal();
+                                
+                                if (failures.length === 0) {
+                                    $('#dk-payment-status-message').text('Your booking has been cancelled successfully.');
+                                } else {
+                                    // Log details for investigation, but show a neutral message to the user per spec
+                                    console.warn('One or more cancellations failed or returned non-success:', failures);
+                                    $('#dk-payment-status-message').text('Your booking has been cancelled.');
+                                }
+
+                                // Cleanup UI
+                                $('#dk-payment-form-container, #dk-external-payment-form').remove();
+                                $('#dk-check-payment-status').prop('disabled', true).hide();
+                                $('#dk-failed-actions').remove();
+                            });
+                        });
+                    }
+                } catch (e) { 
+                    closeProcessModal();
+                    console.error('Error handling payment state', e); 
+                    $('#dk-payment-status-message').html('<strong style="color:red;">Error</strong><br>An error occurred processing the payment status.');
+                }
+        }).fail(function(xhr){
+            closeProcessModal();
+            $('#dk-payment-status-message').html('<strong style="color:red;">Error</strong><br>Failed to fetch payment status. See console for details.');
+            console.error('Payment status fetch failed', xhr && xhr.responseText);
+        });
     }
 
     function renderStep2() {
@@ -511,6 +935,262 @@ jQuery(document).ready(function($) {
         // Attach handlers
         $('#dk-back-to-details-btn').on('click', function(){ goToStep(1); });
 
+        // Pay Now button: ensure contacts exist for payee and students, then proceed
+        $('#dk-pay-now-btn').off('click').on('click', function(){
+            const $btn = $(this);
+            $btn.prop('disabled', true);
+            
+            // Show modal with progress feedback
+            showProcessModal('Processing contact details for payee and students...');
+
+            const currentState = loadState();
+
+            const syncOne = function(person, idx, containerKey) {
+                return $.ajax({
+                    url: DKEnrolmentData.ajax_url,
+                    type: 'POST',
+                    data: {
+                        action: 'dk_sync_contact',
+                        given_name: person.given_name || person.givenName || '',
+                        last_name: person.last_name || person.lastName || person.surname || '',
+                        email: person.email || person.emailAddress || '',
+                        mobile: person.mobile || person.mobilephone || ''
+                    }
+                }).done(function(r){
+                    if (r && r.success && r.data && r.data.contactID) {
+                        if (containerKey === 'payee') {
+                            currentState.payee = currentState.payee || {};
+                            currentState.payee.ax_contact_id = r.data.contactID;
+                        } else if (containerKey === 'students') {
+                            currentState.students = currentState.students || [];
+                            currentState.students[idx] = currentState.students[idx] || {};
+                            currentState.students[idx].ax_contact_id = r.data.contactID;
+                        }
+                    } else {
+                        console.warn('Contact sync returned no-success for', containerKey, idx, r);
+                    }
+                }).fail(function(xhr){
+                    console.error('Contact sync failed for', containerKey, idx, xhr && xhr.responseText);
+                });
+            };
+
+            // SEQUENTIAL: First sync payee if needed, THEN sync students
+            let payeeSync = $.Deferred().resolve();
+            if (currentState.payee && !(currentState.payee.ax_contact_id || currentState.payee.ax_contact)) {
+                payeeSync = syncOne(currentState.payee, 0, 'payee');
+            }
+
+            // Check if payee sync succeeded before proceeding
+            payeeSync.done(function(){
+                // Verify payee has a valid contact ID before proceeding
+                if (currentState.payee && !(currentState.payee.ax_contact_id || currentState.payee.ax_contact)) {
+                    // Payee sync completed but didn't set a contact ID - treat as failure
+                    closeProcessModal();
+                    showErrorModal('An error occurred with your payee details. Please check them and try again.', function(){
+                        $btn.prop('disabled', false);
+                    });
+                    return;
+                }
+                
+                // Payee sync successful (or not needed), proceed with students
+                const studentOps = [];
+                
+                // Now sync students, checking if each is the same person as the payee
+                if (currentState.students && currentState.students.length) {
+                    currentState.students.forEach(function(s, i){
+                        if (!(s.ax_contact_id || s.ax_contact)) {
+                            // If this student is the same person as the payee, copy the payee's contact ID
+                            if (currentState.payee && isSamePerson(s, currentState.payee)) {
+                                const payeeContactID = currentState.payee.ax_contact_id || currentState.payee.ax_contact;
+                                if (payeeContactID) {
+                                    currentState.students[i].ax_contact_id = payeeContactID;
+                                    console.debug('Student', i, 'is same person as payee, copied contact ID:', payeeContactID);
+                                } else {
+                                    console.warn('Student', i, 'is same person as payee but payee sync failed - will sync student independently');
+                                    studentOps.push(syncOne(s, i, 'students'));
+                                }
+                            } else {
+                                // Different person, sync independently
+                                studentOps.push(syncOne(s, i, 'students'));
+                            }
+                        }
+                    });
+                }
+
+                // Wait for all student syncs to complete
+                $.when.apply($, studentOps.length ? studentOps : [$.Deferred().resolve()]).always(function(){
+                // Persist any updated contact ids
+                sessionStorage.setItem(STORAGE_KEY, JSON.stringify(currentState));
+                state = currentState;
+                saveState();
+                $btn.prop('disabled', false);
+                
+                updateProcessModal('Contacts ensured. Creating tentative enrollments...');
+                
+                // Proceed with enrolment flow for one-or-more students
+                console.debug('Pay Now: contact sync ops complete. state:', state);
+                if (state.students && state.students.length >= 1) {
+                    console.debug('Pay Now: students present count', state.students.length);
+                    const students = state.students;
+                    const payeeContact = state.payee ? (state.payee.ax_contact_id || state.payee.ax_contact) : null;
+                    const first = students[0];
+                    const firstContact = first.ax_contact_id || first.ax_contact || 0;
+
+                    console.debug('Pay Now: first student data', first);
+                    console.debug('Pay Now: firstContact', firstContact, 'payeeContact', payeeContact);
+
+                    if (!firstContact) {
+                        updateProcessModal('Error: First student missing contact ID.');
+                        enableProcessModalClose();
+                        console.error('Missing contactID for first student', first);
+                        return;
+                    }
+
+                    // Build params for first student (creates invoice) - TENTATIVE enrollment
+                    const firstParams = [];
+                    firstParams.push('instanceID=' + encodeURIComponent(INSTANCE_ID));
+                    firstParams.push('type=w');
+                    firstParams.push('contactID=' + encodeURIComponent(firstContact));
+                    firstParams.push('tentative=1');
+                    firstParams.push('suppressNotifications=1');
+                    if (payeeContact && payeeContact !== firstContact) firstParams.push('payerID=' + encodeURIComponent(payeeContact));
+                    if (typeof first.revised_price !== 'undefined' && first.revised_price !== null) firstParams.push('cost=' + encodeURIComponent(parseFloat(first.revised_price).toFixed(2)));
+                    if (first.discount_id) firstParams.push('discountIDList=' + encodeURIComponent(first.discount_id));
+
+                    updateProcessModal('Enrolling first student tentatively and creating invoice...');
+                    const firstParamsObj = {};
+                    firstParams.forEach(function(p){ const parts = p.split('='); firstParamsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
+                    console.debug('Pay Now: firstParamsObj (tentative)', firstParamsObj);
+                    proxyEnrol(firstParamsObj).done(function(res){
+                        console.debug('proxyEnrol response for first student', res);
+                        const payload = unwrap(res);
+                        if (!(payload && payload.INVOICEID)) {
+                            updateProcessModal('Error: Failed to create invoice for first student.');
+                            enableProcessModalClose();
+                            console.error('Enrol API returned unexpected result for first student', payload);
+                            return;
+                        }
+                        const invoiceID = payload.INVOICEID;
+                        state.invoiceID = invoiceID;
+                        saveState();
+
+                        // Enrol remaining students (if any) by adding them to the invoice - TENTATIVE
+                        const enrolOps = [];
+                        if (students.length > 1) {
+                            updateProcessModal('Enrolling ' + (students.length - 1) + ' additional student(s) tentatively...');
+                        }
+                        for (let i = 1; i < students.length; i++) {
+                            const s = students[i];
+                            const contactID = s.ax_contact_id || s.ax_contact || 0;
+                            if (!contactID) { console.warn('Skipping student without contactID at index', i); continue; }
+                            const params = [];
+                            params.push('instanceID=' + encodeURIComponent(INSTANCE_ID));
+                            params.push('type=w');
+                            params.push('contactID=' + encodeURIComponent(contactID));
+                            params.push('invoiceID=' + encodeURIComponent(invoiceID));
+                            params.push('tentative=1');
+                            params.push('suppressNotifications=1');
+                            if (typeof s.revised_price !== 'undefined' && s.revised_price !== null) params.push('cost=' + encodeURIComponent(parseFloat(s.revised_price).toFixed(2)));
+                            if (s.discount_id) params.push('discountIDList=' + encodeURIComponent(s.discount_id));
+                            const paramsObj = {};
+                            params.forEach(function(p){ const parts = p.split('='); paramsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
+                            console.debug('Pay Now: enrolling additional student (tentative)', i, paramsObj);
+                            enrolOps.push(proxyEnrol(paramsObj).done(function(r2){
+                                console.debug('proxyEnrol response for additional student', i, r2);
+                                const p2 = unwrap(r2);
+                                if (!(p2 && (p2.INVOICEID || p2.CONTACTID))) {
+                                    console.warn('Enrol for additional student returned unexpected result', i, p2);
+                                }
+                            }).fail(function(xhr){ console.error('Enrol API failed for additional student', i, xhr && xhr.responseText); }));
+                        }
+
+                        // After all student enrols complete (or immediately if none), fetch invoice GUID and request payment form
+                        $.when.apply($, enrolOps.length ? enrolOps : [$.Deferred().resolve()]).always(function(){
+                            console.debug('Pay Now: all tentative enrol ops complete, fetching invoice', invoiceID);
+                            updateProcessModal('Tentative enrollments complete. Preparing payment form...');
+                            // fetch invoice to get INVGUID
+                            proxyGetInvoice(invoiceID).done(function(inv){
+                                console.debug('proxyGetInvoice response', inv);
+                                const invPayload = unwrap(inv);
+                                if (invPayload && invPayload.INVGUID) {
+                                    state.invoiceGUID = invPayload.INVGUID;
+                                    saveState();
+                                    // Request payment form via server proxy
+                                    const currentUrl = window.location.href;
+                                    proxyGetPaymentForm(invPayload.INVGUID, invPayload.INVGUID, currentUrl, currentUrl).done(function(formRes){
+                                        console.debug('proxyGetPaymentForm response', formRes);
+                                        const formPayload = unwrap(formRes);
+                                        if (formPayload && formPayload.SUCCESS && formPayload.DATA) {
+                                            // Auto-redirect to Stripe payment form
+                                            updateProcessModal('Redirecting to secure payment...');
+                                            
+                                            const action = formPayload.DATA.ACTION || '';
+                                            const method = (formPayload.DATA.FORMMETHOD || 'POST').toUpperCase();
+                                            const innerHtml = formPayload.DATA.HTML || '';
+                                            
+                                            // Create a hidden container for the form
+                                            const $container = $('<div id="dk-payment-form-container" style="display:none;"></div>');
+                                            const $form = $('<form id="dk-external-payment-form"></form>');
+                                            $form.attr('action', action).attr('method', method).html(innerHtml);
+                                            
+                                            // Add the required submit button that Axcelerate's script expects
+                                            if ($form.find('input.ax-ecommerce-pay-btn[type="submit"]').length === 0) {
+                                                const $submit = $('<input type="submit" class="ax-ecommerce-pay-btn" value="Pay Now" />');
+                                                $form.append($submit);
+                                            }
+                                            
+                                            $container.append($form);
+                                            $('body').append($container);
+                                            
+                                            // Close modal before redirect
+                                            setTimeout(function(){
+                                                closeProcessModal();
+                                            }, 1000);
+                                            
+                                            // Auto-submit the form after Axcelerate's script has initialized
+                                            setTimeout(function(){
+                                                // Check if AX_CHECKOUT is available (from the included script)
+                                                if (typeof AX_CHECKOUT !== 'undefined' && AX_CHECKOUT.submitPaymentForm) {
+                                                    // Use the Axcelerate function directly
+                                                    AX_CHECKOUT.submitPaymentForm($form[0]);
+                                                } else {
+                                                    // Fallback: manually submit with method=get as the script would do
+                                                    $form[0].method = 'get';
+                                                    $form[0].submit();
+                                                }
+                                            }, 1500); // Wait 1.5s for modal close + script initialization
+                                        } else {
+                                            updateProcessModal('Error: Failed to obtain payment form. See console.');
+                                            enableProcessModalClose();
+                                            console.error('Payment form error', formPayload);
+                                        }
+                                    }).fail(function(xhr){ 
+                                        console.error('Payment form request failed', xhr && xhr.responseText); 
+                                        updateProcessModal('Error: Failed to obtain payment form.');
+                                        enableProcessModalClose();
+                                    });
+                                } else {
+                                    updateProcessModal('Error: Failed to retrieve invoice GUID.');
+                                    enableProcessModalClose();
+                                    console.error('Invoice lookup returned unexpected result', invPayload);
+                                }
+                            }).fail(function(xhr){ 
+                                console.error('Invoice fetch failed', xhr && xhr.responseText); 
+                                updateProcessModal('Error: Failed to fetch invoice.');
+                                enableProcessModalClose();
+                            });
+                        });
+                    }).fail(function(xhr){ console.error('Enrol API request failed for first student', xhr && xhr.responseText); $('#dk-promo-status').text('Failed to enrol first student.'); });
+                }
+                });  // closes $.when.apply for student syncs
+            }).fail(function(){
+                // Payee sync failed (AJAX error or other promise rejection)
+                closeProcessModal();
+                showErrorModal('An error occurred with your payee details. Please check them and try again.', function(){
+                    $btn.prop('disabled', false);
+                });
+            });  // closes payeeSync.done and payeeSync.fail
+        });  // closes Pay Now button click handler
         // If a promo code is already applied in state, but some students lack discount data,
         // automatically re-check discounts so the UI shows accurate fees after coming back from step 1.
         if (state.promo && state.promo.code && !promoResyncing) {
@@ -537,23 +1217,54 @@ jQuery(document).ready(function($) {
                     const student = state.students[idx];
                     const contactID = student.ax_contact_id || student.ax_contact || '';
                     if (!contactID) {
-                        contactOps.push($.ajax({
-                            url: DKEnrolmentData.ajax_url,
-                            type: 'POST',
-                            data: {
-                                action: 'dk_sync_contact',
-                                given_name: student.given_name || student.givenName || '',
-                                last_name: student.last_name || student.lastName || student.surname || '',
-                                email: student.email || student.emailAddress || '',
-                                mobile: student.mobile || student.mobilephone || ''
-                            }
-                        }).done(function(r){
-                            if (r && r.success && r.data && r.data.contactID) {
-                                state.students[idx].ax_contact_id = r.data.contactID;
+                        // Check if this student is the same person as the payee
+                        if (state.payee && isSamePerson(student, state.payee)) {
+                            const payeeContactID = state.payee.ax_contact_id || state.payee.ax_contact;
+                            if (payeeContactID) {
+                                state.students[idx].ax_contact_id = payeeContactID;
+                                console.debug('Promo re-sync: Student', idx, 'is same person as payee, copied contact ID:', payeeContactID);
                             } else {
-                                console.warn('Contact sync returned no-success for student', idx, r);
+                                // Payee doesn't have contact ID either, so sync this student
+                                contactOps.push($.ajax({
+                                    url: DKEnrolmentData.ajax_url,
+                                    type: 'POST',
+                                    data: {
+                                        action: 'dk_sync_contact',
+                                        given_name: student.given_name || student.givenName || '',
+                                        last_name: student.last_name || student.lastName || student.surname || '',
+                                        email: student.email || student.emailAddress || '',
+                                        mobile: student.mobile || student.mobilephone || ''
+                                    }
+                                }).done(function(r){
+                                    if (r && r.success && r.data && r.data.contactID) {
+                                        state.students[idx].ax_contact_id = r.data.contactID;
+                                        // Also update payee since they're the same person
+                                        if (state.payee) state.payee.ax_contact_id = r.data.contactID;
+                                    } else {
+                                        console.warn('Contact sync returned no-success for student', idx, r);
+                                    }
+                                }).fail(function(xhr){ console.error('Contact sync failed for student', idx, xhr && xhr.responseText); }));
                             }
-                        }).fail(function(xhr){ console.error('Contact sync failed for student', idx, xhr && xhr.responseText); }));
+                        } else {
+                            // Different person, sync normally
+                            contactOps.push($.ajax({
+                                url: DKEnrolmentData.ajax_url,
+                                type: 'POST',
+                                data: {
+                                    action: 'dk_sync_contact',
+                                    given_name: student.given_name || student.givenName || '',
+                                    last_name: student.last_name || student.lastName || student.surname || '',
+                                    email: student.email || student.emailAddress || '',
+                                    mobile: student.mobile || student.mobilephone || ''
+                                }
+                            }).done(function(r){
+                                if (r && r.success && r.data && r.data.contactID) {
+                                    state.students[idx].ax_contact_id = r.data.contactID;
+                                } else {
+                                    console.warn('Contact sync returned no-success for student', idx, r);
+                                }
+                            }).fail(function(xhr){ console.error('Contact sync failed for student', idx, xhr && xhr.responseText); }));
+                        }
                     }
                 });
 
@@ -644,7 +1355,6 @@ jQuery(document).ready(function($) {
             // Ensure contacts exist (create/search) before requesting discounts
             const currentState = loadState();
             const ensureContacts = function() {
-                const ops = [];
                 const syncOne = function(person, idx, containerKey) {
                     return $.ajax({
                         url: DKEnrolmentData.ajax_url,
@@ -666,20 +1376,43 @@ jQuery(document).ready(function($) {
                         }
                     });
                 };
+                
+                // SEQUENTIAL: First sync payee if needed, THEN sync students
+                let payeeSync = $.Deferred().resolve();
                 if (currentState.payee && (!currentState.payee.ax_contact_id && !currentState.payee.ax_contact)) {
-                    ops.push(syncOne(currentState.payee, 0, 'payee'));
+                    payeeSync = syncOne(currentState.payee, 0, 'payee');
                 }
-                if (currentState.students && currentState.students.length) {
-                    currentState.students.forEach(function(s, i){
-                        if (!s.ax_contact_id && !s.ax_contact) {
-                            ops.push(syncOne(s, i, 'students'));
-                        }
-                    });
-                }
-                if (ops.length === 0) {
-                    const d = $.Deferred(); d.resolve({ success:true, data:{ state: currentState } }); return d.promise();
-                }
-                return $.when.apply($, ops).then(function(){ return { success:true, data:{ state: currentState } }; }, function(){ return $.Deferred().resolve({ success:false, data:{ message: 'One or more contact syncs failed', state: currentState } }); });
+                
+                // After payee sync completes, sync students
+                return payeeSync.then(function(){
+                    const studentOps = [];
+                    
+                    if (currentState.students && currentState.students.length) {
+                        currentState.students.forEach(function(s, i){
+                            if (!s.ax_contact_id && !s.ax_contact) {
+                                // If this student is the same person as the payee, copy payee's contact ID
+                                if (currentState.payee && isSamePerson(s, currentState.payee)) {
+                                    const payeeContactID = currentState.payee.ax_contact_id || currentState.payee.ax_contact;
+                                    if (payeeContactID) {
+                                        currentState.students[i].ax_contact_id = payeeContactID;
+                                        console.debug('Promo: Student', i, 'is same person as payee, copied contact ID:', payeeContactID);
+                                    } else {
+                                        console.warn('Promo: Student', i, 'is same person as payee but payee sync failed - will sync independently');
+                                        studentOps.push(syncOne(s, i, 'students'));
+                                    }
+                                } else {
+                                    studentOps.push(syncOne(s, i, 'students'));
+                                }
+                            }
+                        });
+                    }
+                    
+                    return $.when.apply($, studentOps.length ? studentOps : [$.Deferred().resolve()]);
+                }).then(function(){ 
+                    return { success:true, data:{ state: currentState } }; 
+                }, function(){ 
+                    return $.Deferred().resolve({ success:false, data:{ message: 'One or more contact syncs failed', state: currentState } }); 
+                });
             };
 
             // show initial status and disable button
