@@ -191,6 +191,30 @@ class DK_Axcelerate_API {
         $path = '/api/accounting/ecommerce/payment/ref/' . rawurlencode($reference);
         return $this->request_get($path, array());
     }
+
+    /**
+     * Cancel a course enrollment (change tentative to cancelled)
+     * Parameters: contactID, instanceID, type (typically 'w'), logType='Cancelled'
+     */
+    public function cancel_enrolment($params = array()) {
+        $url = $this->base . '/api/course/enrolment';
+        if (!empty($params)) $url .= (strpos($url, '?') === false ? '?' : '&') . http_build_query($params);
+        
+        $args = array(
+            'headers' => $this->headers(),
+            'timeout' => 20,
+            'method' => 'PUT',
+            'body' => ''
+        );
+        
+        $resp = wp_remote_request($url, $args);
+        if (is_wp_error($resp)) return new WP_Error('http_error', $resp->get_error_message());
+        $code = wp_remote_retrieve_response_code($resp);
+        $body = wp_remote_retrieve_body($resp);
+        $data = json_decode($body, true);
+        if ($code >= 200 && $code < 300) return $data;
+        return new WP_Error('api_error', 'HTTP ' . $code . ' - ' . substr($body,0,500));
+    }
 }
 
 ?>

@@ -51,6 +51,12 @@ jQuery(document).ready(function($) {
         const $container = $('#dk-calendar-ajax-container');
         // Guard: if no calendar container on page (e.g. enrolment shortcode only), exit safely
         if ( $container.length === 0 ) return;
+        
+        // Clear enrollment flow state when calendar loads (fresh start for each course selection)
+        // Only clear when we're actually loading the calendar, not on enrollment page
+        const STORAGE_KEY = 'dk_enrolment_state';
+        sessionStorage.removeItem(STORAGE_KEY);
+        
         const containerClass = $container.attr('class') || '';
         const layoutMatch = containerClass.match(/dk-layout-(\w+)/);
         const layout = layoutMatch ? layoutMatch[1] : 'default';

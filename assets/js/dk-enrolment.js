@@ -59,9 +59,9 @@ jQuery(document).ready(function($) {
 
     function loadState() {
         try {
-            return JSON.parse(sessionStorage.getItem(STORAGE_KEY)) || { payee: null, students: [] };
+            return JSON.parse(sessionStorage.getItem(STORAGE_KEY)) || { payee: null, students: [], current_flow: null, flow_data: {} };
         } catch (e) {
-            return { payee: null, students: [] };
+            return { payee: null, students: [], current_flow: null, flow_data: {} };
         }
     }
     function saveState() {
@@ -69,7 +69,7 @@ jQuery(document).ready(function($) {
     }
 
     function clearState() {
-        state = { payee: null, students: [] };
+        state = { payee: null, students: [], current_flow: null, flow_data: {} };
         saveState();
     }
 
@@ -95,6 +95,38 @@ jQuery(document).ready(function($) {
         const lastName1 = (person1.last_name || person1.lastName || person1.surname || '').trim().toLowerCase();
         const lastName2 = (person2.last_name || person2.lastName || person2.surname || '').trim().toLowerCase();
         return email1 && email2 && email1 === email2 && firstName1 === firstName2 && lastName1 === lastName2;
+    }
+
+    // Create new student object with proper initialization
+    function createNewStudent() {
+        return {
+            enrollment_status: 'no',
+            learner_id: null,
+            enrolled_at: null
+        };
+    }
+
+    // Lock status helper functions - check if data is immutable due to enrollments/invoice
+    function hasAnyEnrollments() {
+        if (!state.students || !state.students.length) return false;
+        return state.students.some(function(s) {
+            const status = s.enrollment_status || 'no';
+            return status !== 'no';
+        });
+    }
+
+    function isStudentEnrolled(studentIndex) {
+        if (!state.students || !state.students[studentIndex]) return false;
+        const status = state.students[studentIndex].enrollment_status || 'no';
+        return status !== 'no';
+    }
+
+    function isPayeeLocked() {
+        return !!(state.invoiceID);
+    }
+
+    function canNavigateBack() {
+        return !hasAnyEnrollments() && !isPayeeLocked();
     }
 
     // Modal helper functions
@@ -137,12 +169,35 @@ jQuery(document).ready(function($) {
             const $content = $('<div class="dk-modal-content" style="text-align:center;"><div id="dk-error-message" style="margin-bottom:20px;color:red;"></div><button id="dk-error-ok" class="dk-btn dk-btn-primary">OK</button></div>');
             $modal.append($content);
             $('body').append($modal);
+            $('#dk-error-ok').on('click', function() {
+                $modal.hide();
+                if (onOkCallback) onOkCallback();
+            });
         }
         $('#dk-error-message').html(message);
-        $('#dk-error-ok').off('click').on('click', function() {
+        $modal.show();
+    }
+
+    function showConfirmModal(message, onYesCallback, onNoCallback) {
+        let $modal = $('#dk-confirm-modal');
+        if (!$modal.length) {
+            $modal = $('<div id="dk-confirm-modal" class="dk-modal-overlay"></div>');
+            const $content = $('<div class="dk-modal-content" style="text-align:center;"><div id="dk-confirm-message" style="margin-bottom:20px;"></div><div style="display:flex;gap:10px;justify-content:center;"><button id="dk-confirm-no" class="dk-btn dk-btn-secondary">No</button><button id="dk-confirm-yes" class="dk-btn dk-btn-primary">Yes</button></div></div>');
+            $modal.append($content);
+            $('body').append($modal);
+        }
+        
+        // Remove old handlers and attach new ones
+        $('#dk-confirm-yes').off('click').on('click', function() {
             $modal.hide();
-            if (onOkCallback) onOkCallback();
+            if (onYesCallback) onYesCallback();
         });
+        $('#dk-confirm-no').off('click').on('click', function() {
+            $modal.hide();
+            if (onNoCallback) onNoCallback();
+        });
+        
+        $('#dk-confirm-message').html(message);
         $modal.show();
     }
 
@@ -212,6 +267,11 @@ jQuery(document).ready(function($) {
     function renderSingleFlow(showPayeeAsStudent, isBookForMyself) {
         // mark flow for navigation/back behavior
         activeFlow = isBookForMyself ? 'single' : 'someone';
+        state.current_flow = isBookForMyself ? 'step1-myself' : 'step1-someone';
+        state.flow_data = state.flow_data || {};
+        state.flow_data.base_flow = activeFlow; // Preserve for step 2 navigation
+        saveState();
+        
         $('#dk-step-1-initial-view, #dk-step-1-group-setup').hide();
         $('#dk-step-1-form-view').show();
         // Immediate title to reduce perceived latency
@@ -223,6 +283,8 @@ jQuery(document).ready(function($) {
 
         if (isBookForMyself) {
             // Request student form only, no add button
+            // Initialize student if needed
+            if (!state.students[0]) state.students[0] = createNewStudent();
             requestForm(0, 'student', 'Your Details (Student)', state.students[0] || {}, false, false).done(function(r) {
                 $container.empty().append(r.data.html);
             }).fail(function(){ $container.html('<p class="dk-loading">Failed to load form. Please try again.</p>'); });
@@ -233,6 +295,8 @@ jQuery(document).ready(function($) {
                 requestForm(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false).done(function(r) {
                 $container.empty().append(r.data.html);
                 // then student (do NOT show delete button here — always require at least one student)
+                // Initialize student if needed
+                if (!state.students[0]) state.students[0] = createNewStudent();
                 requestForm(1, 'student', 'Student Details', state.students[0] || {}, false, false).done(function(r2) {
                     $container.append(r2.data.html);
                 }).fail(function(){ $container.append('<p class="dk-loading">Failed to load student form.</p>'); });
@@ -256,6 +320,9 @@ jQuery(document).ready(function($) {
     });
 
     $wrapper.on('click', '#dk-book-group-btn', function() {
+        state.current_flow = 'step1-group-setup';
+        saveState();
+        
         $('#dk-step-1-initial-view').hide();
         $('#dk-step-1-group-setup').show();
         // set default and bounds
@@ -299,7 +366,7 @@ jQuery(document).ready(function($) {
             if (state.payee && Object.keys(state.payee).length) known.push(state.payee);
             if (state.students && state.students.length) known.push.apply(known, state.students);
             for (let i = 0; i < count; i++) {
-                if (known[i]) newStudents.push(known[i]); else newStudents.push({});
+                if (known[i]) newStudents.push(known[i]); else newStudents.push(createNewStudent());
             }
             newPayee = null; // payee is represented as student[0]
         } else {
@@ -308,19 +375,19 @@ jQuery(document).ready(function($) {
                 newPayee = state.payee;
                 const knownStudents = state.students ? state.students.slice() : [];
                 for (let i = 0; i < count; i++) {
-                    if (knownStudents[i]) newStudents.push(knownStudents[i]); else newStudents.push({});
+                    if (knownStudents[i]) newStudents.push(knownStudents[i]); else newStudents.push(createNewStudent());
                 }
             } else if (state.students && state.students.length) {
                 // promote first existing student to be payee and shift remaining students
                 newPayee = state.students[0];
                 const remaining = state.students.slice(1);
                 for (let i = 0; i < count; i++) {
-                    if (remaining[i]) newStudents.push(remaining[i]); else newStudents.push({});
+                    if (remaining[i]) newStudents.push(remaining[i]); else newStudents.push(createNewStudent());
                 }
             } else {
                 // no known data
                 newPayee = {};
-                for (let i = 0; i < count; i++) newStudents.push({});
+                for (let i = 0; i < count; i++) newStudents.push(createNewStudent());
             }
         }
 
@@ -328,6 +395,8 @@ jQuery(document).ready(function($) {
         // (the above construction already set exact length)
         state.payee = newPayee;
         state.students = newStudents;
+        state.current_flow = 'step1-group-forms';
+        state.flow_data = { group_count: count, payee_is_student: partOfGroup, base_flow: 'group' };
         saveState();
 
         // Render forms accordingly and show form-view
@@ -344,7 +413,7 @@ jQuery(document).ready(function($) {
     // Add new student button (in group flows)
     $wrapper.on('click', '#dk-add-new-student-btn', function() {
         if (state.students.length >= SPACES_AVAIL) { alert('Maximum number of students reached!'); return; }
-        state.students.push({});
+        state.students.push(createNewStudent());
         saveState();
         // request form for next index
         const newIndex = state.students.length - 1 + (state.payee ? 1 : 0);
@@ -355,6 +424,19 @@ jQuery(document).ready(function($) {
     // Delete student handler (delegated)
     $wrapper.on('click', '.dk-delete-student-btn', function() {
         const idx = parseInt($(this).data('index'));
+        
+        // Determine which logical student to remove based on presence of payee
+        let studentIdx = idx;
+        if (state.payee) {
+            studentIdx = idx - 1; // First form is payee, students start at index 1
+        }
+        
+        // Check if this student is enrolled - cannot delete if enrolled
+        if (studentIdx >= 0 && isStudentEnrolled(studentIdx)) {
+            alert('Cannot delete this student - they have been enrolled. Please contact support if changes are needed.');
+            return;
+        }
+        
         // Determine which logical student to remove based on presence of payee
         if (state.payee) {
             // first form is payee, students start at index 1 in DOM
@@ -374,6 +456,12 @@ jQuery(document).ready(function($) {
 
     // Go back from form view
     $wrapper.on('click', '#dk-go-back-btn', function() {
+        // Check if we can navigate back - prevent if enrollments exist
+        if (!canNavigateBack() && activeFlow !== 'group') {
+            alert('Cannot go back - enrollments have been created. Student details are locked. Please contact support if you need to make changes.');
+            return;
+        }
+        
         // If we came from a group setup, save current inputs WITHOUT validation
         if (activeFlow === 'group') {
             const forms = $('#dk-student-forms-container .dk-student-form');
@@ -488,9 +576,79 @@ jQuery(document).ready(function($) {
     // Edit student link on step 2 will simply go back to step 1
     $wrapper.on('click', '.dk-edit-student-link', function(e){ e.preventDefault(); goToStep(1); });
 
-    // If we have saved data, go to step 1 and render forms accordingly so users can continue
-    if (state.payee || (state.students && state.students.length>0)) {
-        // Decide rendering mode
+    // Page refresh recovery - restore user's position based on current_flow
+    if (state.current_flow) {
+        if (state.current_flow.startsWith('step2')) {
+            // User was on step 2, but we need to prepare step 1's state first so "back" button works
+            // Use flow_data.base_flow to determine which flow they came from
+            const baseFlow = (state.flow_data && state.flow_data.base_flow) || 'single';
+            
+            if (baseFlow === 'single') {
+                // Book myself flow
+                activeFlow = 'single';
+                $('#dk-step-1-initial-view').hide();
+                $('#dk-step-1-form-view').show();
+                $('#dk-form-view-title').text('Book for Myself');
+                $('#dk-add-new-student-btn').hide();
+                renderFormsForBooking(true, false); // payeeIsStudent=true, isGroupFlow=false
+            } else if (baseFlow === 'group') {
+                // Group flow
+                activeFlow = 'group';
+                $('#dk-step-1-initial-view').hide();
+                $('#dk-step-1-form-view').show();
+                $('#dk-form-view-title').text('Group Booking');
+                $('#dk-add-new-student-btn').show();
+                const payeeIsStudent = state.flow_data.payee_is_student || (!state.payee && state.students.length > 0);
+                renderFormsForBooking(payeeIsStudent, true); // isGroupFlow=true
+            } else {
+                // Book someone else flow
+                activeFlow = 'someone';
+                $('#dk-step-1-initial-view').hide();
+                $('#dk-step-1-form-view').show();
+                $('#dk-form-view-title').text('Book For Someone Else');
+                $('#dk-add-new-student-btn').hide();
+                renderFormsForBooking(false, false); // payeeIsStudent=false, isGroupFlow=false
+            }
+            
+            // Now navigate to step 2
+            goToStep(2);
+        } else if (state.current_flow === 'step1-myself') {
+            // User was in "book myself" flow
+            activeFlow = 'single';
+            $('#dk-step-1-initial-view').hide();
+            $('#dk-step-1-form-view').show();
+            $('#dk-form-view-title').text('Book for Myself');
+            $('#dk-add-new-student-btn').hide();
+            renderFormsForBooking(true, false); // payeeIsStudent=true, isGroupFlow=false
+        } else if (state.current_flow === 'step1-someone') {
+            // User was in "book someone else" flow
+            activeFlow = 'someone';
+            $('#dk-step-1-initial-view').hide();
+            $('#dk-step-1-form-view').show();
+            $('#dk-form-view-title').text('Book For Someone Else');
+            $('#dk-add-new-student-btn').hide();
+            renderFormsForBooking(false, false); // payeeIsStudent=false, isGroupFlow=false
+        } else if (state.current_flow === 'step1-group-setup') {
+            // User was on group setup screen
+            $('#dk-step-1-initial-view').hide();
+            $('#dk-step-1-group-setup').show();
+            const max = Math.max(2, Math.min(SPACES_AVAIL, 999));
+            $('#dk_group_count').attr('max', max).val(state.flow_data.group_count || 2);
+            if (state.flow_data.payee_is_student !== undefined) {
+                $('input[name="dk_group_member_toggle"][value="' + (state.flow_data.payee_is_student ? 'yes' : 'no') + '"]').prop('checked', true);
+            }
+        } else if (state.current_flow === 'step1-group-forms') {
+            // User was filling in group forms
+            activeFlow = 'group';
+            $('#dk-step-1-initial-view').hide();
+            $('#dk-step-1-form-view').show();
+            $('#dk-form-view-title').text('Group Booking');
+            $('#dk-add-new-student-btn').show();
+            const payeeIsStudent = state.flow_data.payee_is_student || (!state.payee && state.students.length > 0);
+            renderFormsForBooking(payeeIsStudent, true); // isGroupFlow=true
+        }
+    } else if (state.payee || (state.students && state.students.length>0)) {
+        // Fallback: If we have saved data but no current_flow, go to step 1 and render forms accordingly
         const payeeIsStudent = !state.payee && (state.students && state.students.length>0);
         // If there are multiple students, assume this was a group flow
         if (state.students && state.students.length > 1) activeFlow = 'group';
@@ -544,6 +702,24 @@ jQuery(document).ready(function($) {
     // --- Navigation: goToStep and Step 2 renderer ---
     function goToStep(step) {
         if (step < 1 || step > 3) return;
+        
+        // Track flow state - preserve base flow info
+        if (step === 2) {
+            state.current_flow = 'step2-init';
+            // Ensure base_flow is set if not already
+            if (!state.flow_data.base_flow) {
+                // Infer from current state
+                if (!state.payee && state.students.length === 1) {
+                    state.flow_data.base_flow = 'single';
+                } else if (state.students.length > 1) {
+                    state.flow_data.base_flow = 'group';
+                } else {
+                    state.flow_data.base_flow = 'someone';
+                }
+            }
+            saveState();
+        }
+        
         // Hide all step contents and clear active tabs
         $('.dk-step-content').hide();
         $('.dk-tab-item').removeClass('dk-active-tab');
@@ -865,9 +1041,16 @@ jQuery(document).ready(function($) {
                 const revised = (typeof student.revised_price !== 'undefined' && student.revised_price !== null) ? parseFloat(student.revised_price) : null;
                 const finalFee = revised !== null ? revised : originalFee;
                 const discountAmount = revised !== null ? Math.max(0, originalFee - revised) : 0;
+                
+                // Check if student is enrolled - if yes, show locked message instead of edit link
+                const enrolled = isStudentEnrolled(idx);
 
                 html += '<div class="dk-summary-student-item">';
-                html += '<div class="dk-student-details-row"><h4>Student ' + num + '</h4><a href="#" class="dk-edit-student-link" data-index="' + idx + '">&lt;&lt; Edit Student Details</a></div>';
+                if (enrolled) {
+                    html += '<div class="dk-student-details-row"><h4>Student ' + num + '</h4><span style="color:#999;font-style:italic;">(Details Locked - Enrolled)</span></div>';
+                } else {
+                    html += '<div class="dk-student-details-row"><h4>Student ' + num + '</h4><a href="#" class="dk-edit-student-link" data-index="' + idx + '">&lt;&lt; Edit Student Details</a></div>';
+                }
                 html += '<ul class="dk-student-summary-list">';
                 html += '<li><span>First Name:</span><span>' + (student.given_name||'') + '</span></li>';
                 html += '<li><span>Last Name:</span><span>' + (student.last_name||'') + '</span></li>';
@@ -915,7 +1098,7 @@ jQuery(document).ready(function($) {
         html += '<div class="dk-promo-row" style="margin-top:12px;">';
         html += '<label for="dk-promo-code" style="margin-right:8px;">Promo Code:</label>';
         html += '<input type="text" id="dk-promo-code" name="promo_code" style="width:160px;margin-right:8px;" ' + (promoLocked ? 'disabled' : '') + ' value="' + (appliedPromo) + '" />';
-        html += '<button id="dk-apply-promo-btn" class="dk-btn dk-btn-secondary">' + (promoLocked ? 'Clear Promotion Code' : 'Apply Promotion Code') + '</button>';
+        html += '<button id="dk-apply-promo-btn" class="dk-btn dk-btn-outline dk-btn-30">' + (promoLocked ? 'Clear' : 'Apply') + '</button>';
         html += '</div>';
         // Promo status - persist and render from state.promo_status so it survives re-renders
         const promoStatus = (state.promo_status && typeof state.promo_status === 'object') ? state.promo_status : {};
@@ -925,15 +1108,28 @@ jQuery(document).ready(function($) {
 
         // Pay button placeholder
         html += '<div class="dk-button-group dk-nav-buttons" style="margin-top:20px;">';
-        html += '<button id="dk-back-to-details-btn" class="dk-btn dk-btn-secondary dk-btn-50"><< Go Back</button>';
-        html += '<button id="dk-pay-now-btn" class="dk-btn dk-btn-primary dk-btn-50">Pay Now</button>';
+        html += '<button id="dk-back-to-details-btn" class="dk-btn dk-btn-outline dk-btn-30"><< Go Back</button>';
+        html += '<button id="dk-pay-now-btn" class="dk-btn dk-btn-primary dk-btn-70">Pay Now</button>';
         html += '</div>';
 
         $step2.append(html);
                
 
-        // Attach handlers
-        $('#dk-back-to-details-btn').on('click', function(){ goToStep(1); });
+        // Attach handlers - check if back button should be disabled
+        const shouldDisableBack = hasAnyEnrollments() || isPayeeLocked();
+        const $backBtn = $('#dk-back-to-details-btn');
+        $backBtn.on('click', function(){ 
+            if (shouldDisableBack) {
+                alert('Cannot go back - enrollments have been created or invoice exists. Student and payee details are locked. Please contact support if you need to make changes.');
+                return;
+            }
+            goToStep(1); 
+        });
+        
+        // Visually indicate if back button is locked
+        if (shouldDisableBack) {
+            $backBtn.css('opacity', '0.5').css('cursor', 'not-allowed').attr('title', 'Cannot edit details after enrollment or invoice creation');
+        }
 
         // Pay Now button: ensure contacts exist for payee and students, then proceed
         $('#dk-pay-now-btn').off('click').on('click', function(){
@@ -1033,56 +1229,116 @@ jQuery(document).ready(function($) {
                     console.debug('Pay Now: students present count', state.students.length);
                     const students = state.students;
                     const payeeContact = state.payee ? (state.payee.ax_contact_id || state.payee.ax_contact) : null;
+
+                    // Prepare first student enrollment params (tentative)
                     const first = students[0];
                     const firstContact = first.ax_contact_id || first.ax_contact || 0;
-
+                    
                     console.debug('Pay Now: first student data', first);
                     console.debug('Pay Now: firstContact', firstContact, 'payeeContact', payeeContact);
 
                     if (!firstContact) {
-                        updateProcessModal('Error: First student missing contact ID.');
-                        enableProcessModalClose();
-                        console.error('Missing contactID for first student', first);
+                        closeProcessModal();
+                        showErrorModal('First student contact is missing. Cannot proceed with enrollment.', function(){
+                            $btn.prop('disabled', false);
+                        });
                         return;
                     }
-
-                    // Build params for first student (creates invoice) - TENTATIVE enrollment
-                    const firstParams = [];
-                    firstParams.push('instanceID=' + encodeURIComponent(INSTANCE_ID));
-                    firstParams.push('type=w');
-                    firstParams.push('contactID=' + encodeURIComponent(firstContact));
-                    firstParams.push('tentative=1');
-                    firstParams.push('suppressNotifications=1');
-                    if (payeeContact && payeeContact !== firstContact) firstParams.push('payerID=' + encodeURIComponent(payeeContact));
-                    if (typeof first.revised_price !== 'undefined' && first.revised_price !== null) firstParams.push('cost=' + encodeURIComponent(parseFloat(first.revised_price).toFixed(2)));
-                    if (first.discount_id) firstParams.push('discountIDList=' + encodeURIComponent(first.discount_id));
-
-                    updateProcessModal('Enrolling first student tentatively and creating invoice...');
-                    const firstParamsObj = {};
-                    firstParams.forEach(function(p){ const parts = p.split('='); firstParamsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
-                    console.debug('Pay Now: firstParamsObj (tentative)', firstParamsObj);
-                    proxyEnrol(firstParamsObj).done(function(res){
-                        console.debug('proxyEnrol response for first student', res);
-                        const payload = unwrap(res);
-                        if (!(payload && payload.INVOICEID)) {
-                            updateProcessModal('Error: Failed to create invoice for first student.');
-                            enableProcessModalClose();
-                            console.error('Enrol API returned unexpected result for first student', payload);
+                    
+                    // Check if first student is already enrolled - if yes, use existing enrollment
+                    const firstAlreadyEnrolled = (first.enrollment_status && first.enrollment_status !== 'no');
+                    
+                    if (firstAlreadyEnrolled) {
+                        // First student already enrolled, skip enrollment and use existing invoice
+                        console.debug('First student already enrolled with status:', first.enrollment_status);
+                        if (!state.invoiceID) {
+                            closeProcessModal();
+                            showErrorModal('First student is enrolled but invoice ID is missing. Cannot proceed.', function(){
+                                $btn.prop('disabled', false);
+                            });
                             return;
                         }
-                        const invoiceID = payload.INVOICEID;
-                        state.invoiceID = invoiceID;
-                        saveState();
+                        
+                        // Skip to additional students enrollment
+                        proceedWithAdditionalStudents();
+                    } else {
+                        // First student not yet enrolled - enroll now
+                        const firstParams = [];
+                        firstParams.push('instanceID=' + encodeURIComponent(INSTANCE_ID));
+                        firstParams.push('type=w');
+                        firstParams.push('contactID=' + encodeURIComponent(firstContact));
+                        firstParams.push('tentative=1');
+                        firstParams.push('suppressNotifications=1');
+                        if (payeeContact && payeeContact !== firstContact) firstParams.push('payerID=' + encodeURIComponent(payeeContact));
+                        if (typeof first.revised_price !== 'undefined' && first.revised_price !== null) firstParams.push('cost=' + encodeURIComponent(parseFloat(first.revised_price).toFixed(2)));
+                        if (first.discount_id) firstParams.push('discountIDList=' + encodeURIComponent(first.discount_id));
 
+                        updateProcessModal('Enrolling first student tentatively and creating invoice...');
+                        const firstParamsObj = {};
+                        firstParams.forEach(function(p){ const parts = p.split('='); firstParamsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
+                        console.debug('Pay Now: firstParamsObj (tentative)', firstParamsObj);
+                        
+                        proxyEnrol(firstParamsObj).done(function(res){
+                            console.debug('proxyEnrol response for first student', res);
+                            const payload = unwrap(res);
+                            if (!(payload && payload.INVOICEID)) {
+                                closeProcessModal();
+                                showErrorModal('Failed to create invoice for first student. Please try again.', function(){
+                                    $btn.prop('disabled', false);
+                                });
+                                console.error('Enrol API returned unexpected result for first student', payload);
+                                return;
+                            }
+                            
+                            // Save enrollment status and learner ID for first student
+                            const invoiceID = payload.INVOICEID;
+                            const learnerID = payload.LEARNERID || null;
+                            state.invoiceID = invoiceID;
+                            state.students[0].enrollment_status = 'tentative';
+                            state.students[0].learner_id = learnerID;
+                            state.students[0].enrolled_at = Date.now();
+                            state.current_flow = 'step2-payment';
+                            saveState();
+                            console.debug('First student enrolled: status=tentative, learnerID=', learnerID);
+
+                            proceedWithAdditionalStudents();
+                        }).fail(function(xhr){
+                            closeProcessModal();
+                            showErrorModal('Failed to enroll first student: ' + (xhr.responseText || 'Unknown error'), function(){
+                                $btn.prop('disabled', false);
+                            });
+                            console.error('Enrol API failed for first student', xhr);
+                        });
+                    }
+                    
+                    function proceedWithAdditionalStudents() {
+                        const invoiceID = state.invoiceID;
+                        
                         // Enrol remaining students (if any) by adding them to the invoice - TENTATIVE
                         const enrolOps = [];
+                        const enrolFailures = [];
+                        
                         if (students.length > 1) {
                             updateProcessModal('Enrolling ' + (students.length - 1) + ' additional student(s) tentatively...');
                         }
+                        
                         for (let i = 1; i < students.length; i++) {
                             const s = students[i];
                             const contactID = s.ax_contact_id || s.ax_contact || 0;
-                            if (!contactID) { console.warn('Skipping student without contactID at index', i); continue; }
+                            
+                            if (!contactID) { 
+                                console.warn('Skipping student without contactID at index', i);
+                                enrolFailures.push('Student ' + (i + 1) + ' is missing contact ID');
+                                continue; 
+                            }
+                            
+                            // Check if this student is already enrolled
+                            const alreadyEnrolled = (s.enrollment_status && s.enrollment_status !== 'no');
+                            if (alreadyEnrolled) {
+                                console.debug('Student', i, 'already enrolled with status:', s.enrollment_status);
+                                continue; // Skip this student, already enrolled
+                            }
+                            
                             const params = [];
                             params.push('instanceID=' + encodeURIComponent(INSTANCE_ID));
                             params.push('type=w');
@@ -1095,19 +1351,61 @@ jQuery(document).ready(function($) {
                             const paramsObj = {};
                             params.forEach(function(p){ const parts = p.split('='); paramsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
                             console.debug('Pay Now: enrolling additional student (tentative)', i, paramsObj);
+                            
                             enrolOps.push(proxyEnrol(paramsObj).done(function(r2){
                                 console.debug('proxyEnrol response for additional student', i, r2);
                                 const p2 = unwrap(r2);
                                 if (!(p2 && (p2.INVOICEID || p2.CONTACTID))) {
                                     console.warn('Enrol for additional student returned unexpected result', i, p2);
+                                    enrolFailures.push('Student ' + (i + 1) + ' enrollment returned invalid response');
+                                } else {
+                                    // Save enrollment status and learner ID
+                                    const learnerID = p2.LEARNERID || null;
+                                    state.students[i].enrollment_status = 'tentative';
+                                    state.students[i].learner_id = learnerID;
+                                    state.students[i].enrolled_at = Date.now();
+                                    saveState();
+                                    console.debug('Student', i, 'enrolled: status=tentative, learnerID=', learnerID);
                                 }
-                            }).fail(function(xhr){ console.error('Enrol API failed for additional student', i, xhr && xhr.responseText); }));
+                            }).fail(function(xhr){ 
+                                console.error('Enrol API failed for additional student', i, xhr && xhr.responseText);
+                                enrolFailures.push('Student ' + (i + 1) + ' enrollment failed: ' + (xhr.responseText || 'Unknown error'));
+                            }));
                         }
 
-                        // After all student enrols complete (or immediately if none), fetch invoice GUID and request payment form
+                        // After all student enrols complete (or immediately if none), validate all are enrolled
                         $.when.apply($, enrolOps.length ? enrolOps : [$.Deferred().resolve()]).always(function(){
-                            console.debug('Pay Now: all tentative enrol ops complete, fetching invoice', invoiceID);
+                            console.debug('Pay Now: all tentative enrol ops complete');
+                            
+                            // Validate ALL students have enrollment_status = 'tentative' or higher
+                            const notEnrolled = [];
+                            for (let i = 0; i < state.students.length; i++) {
+                                const status = state.students[i].enrollment_status || 'no';
+                                if (status === 'no') {
+                                    notEnrolled.push('Student ' + (i + 1));
+                                }
+                            }
+                            
+                            if (notEnrolled.length > 0 || enrolFailures.length > 0) {
+                                closeProcessModal();
+                                const errorMsg = 'Some students failed to enroll:\n' + 
+                                    (notEnrolled.length > 0 ? notEnrolled.join(', ') + ' not enrolled.\n' : '') +
+                                    (enrolFailures.length > 0 ? enrolFailures.join('\n') : '');
+                                showErrorModal(errorMsg, function(){
+                                    $btn.prop('disabled', false);
+                                });
+                                return;
+                            }
+                            
+                            // All students enrolled - proceed to fetch invoice and payment form
                             updateProcessModal('Tentative enrollments complete. Preparing payment form...');
+                            fetchInvoiceAndPaymentForm();
+                        });
+                    }
+                    
+                    function fetchInvoiceAndPaymentForm() {
+                        const invoiceID = state.invoiceID;
+                        console.debug('Pay Now: fetching invoice', invoiceID);
                             // fetch invoice to get INVGUID
                             proxyGetInvoice(invoiceID).done(function(inv){
                                 console.debug('proxyGetInvoice response', inv);
@@ -1175,12 +1473,13 @@ jQuery(document).ready(function($) {
                                     console.error('Invoice lookup returned unexpected result', invPayload);
                                 }
                             }).fail(function(xhr){ 
-                                console.error('Invoice fetch failed', xhr && xhr.responseText); 
-                                updateProcessModal('Error: Failed to fetch invoice.');
-                                enableProcessModalClose();
+                                closeProcessModal();
+                                showErrorModal('Failed to fetch invoice: ' + (xhr.responseText || 'Unknown error'), function(){
+                                    $btn.prop('disabled', false);
+                                });
+                                console.error('Invoice fetch failed', xhr && xhr.responseText);
                             });
-                        });
-                    }).fail(function(xhr){ console.error('Enrol API request failed for first student', xhr && xhr.responseText); $('#dk-promo-status').text('Failed to enrol first student.'); });
+                    }  // closes fetchInvoiceAndPaymentForm function
                 }
                 });  // closes $.when.apply for student syncs
             }).fail(function(){

@@ -92,12 +92,13 @@
 }
 
 .dk-btn-primary {
-    background-color: black;
-    color: white;
+    background-color: black !important;
+    color: white !important;
+    border: 1px solid black !important;
 }
 
 .dk-btn-primary:hover {
-    background-color: #333;
+    background-color: #333 !important;
 }
 
 /* Secondary Button (Add New Student, Apply Coupon) */
@@ -109,6 +110,17 @@
 
 .dk-btn-secondary:hover {
     background-color: #f0f0f0;
+}
+
+/* Outline Button (Less prominent options - light grey background) */
+.dk-btn-outline {
+    background-color: #f5f5f5 !important; /* Very light grey */
+    color: black !important;
+    border: 1px solid black !important;
+}
+
+.dk-btn-outline:hover {
+    background-color: #e8e8e8 !important; /* Slightly darker grey on hover */
 }
 
 .dk-btn-delete {
@@ -132,6 +144,22 @@
 .dk-btn-50 {
     width: 100%;
     max-width: 480px; /* Keep a reasonable max width */
+}
+
+.dk-btn-20 {
+    flex: 0 0 20%!important;
+}
+
+.dk-btn-30 {
+    flex: 0 0 30%!important;
+}
+
+.dk-btn-45 {
+    flex: 0 0 45%!important;
+}
+
+.dk-btn-70 {
+    flex: 0 0 70%!important;
 }
 
 /* --- STUDENT FORM LAYOUT --- */
@@ -273,6 +301,14 @@
 }
 
 /* --- STEP 2 PAYMENT SUMMARY STYLES --- */
+
+.dk-edit-student-link {
+    color: royalblue!important;
+    text-decoration: underline!important;
+    cursor: pointer;
+    font-size: 0.9em;
+    margin-left: 40px;
+}
 .dk-summary-section {
     margin-bottom: 30px;
     padding: 15px;
@@ -292,22 +328,30 @@
 
 .dk-student-details-row {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
     font-size: 1.1em;
+}
+
+.dk-student-details-row h4{
+    margin-right: 15px;
 }
 
 .dk-student-summary-list {
     list-style: none;
     padding: 0;
     margin-top: 5px;
+    margin-left: 30px;
 }
 
 .dk-student-summary-list li {
     padding: 5px 0;
     border-bottom: 1px dotted #eee;
     display: flex;
-    justify-content: space-between;
+}
+
+.dk-student-summary-list li span:first-child {
+    display: inline-block;
+    width: 105px;
+    margin-right: 20px;
 }
 
 .dk-student-fee {
@@ -316,7 +360,7 @@
 }
 
 .dk-summary-total {
-    text-align: right;
+    text-align: left;
     font-size: 1.6em;
     color: black;
 }

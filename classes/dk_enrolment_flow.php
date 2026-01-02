@@ -179,8 +179,8 @@ function dk_enrolment_flow_shortcode_output( $atts ) {
 
                         <div class="dk-button-group dk-initial-buttons">
                             <button id="dk-book-myself-btn" class="dk-btn dk-btn-primary dk-btn-50">Book For Myself</button>
-                            <button id="dk-book-someone-btn" class="dk-btn dk-btn-primary dk-btn-50">Book For Someone Else</button>
-                            <button id="dk-book-group-btn" class="dk-btn dk-btn-primary dk-btn-50">Book For a Group (2+)</button>
+                            <button id="dk-book-someone-btn" class="dk-btn dk-btn-outline dk-btn-50">Book For Someone Else</button>
+                            <button id="dk-book-group-btn" class="dk-btn dk-btn-outline dk-btn-50">Book For a Group (2+)</button>
                         </div>
                     </div>
 
@@ -201,14 +201,14 @@ function dk_enrolment_flow_shortcode_output( $atts ) {
                                 <label>Are you part of the group of students?</label>
                                 <div>
                                     <label><input type="radio" name="dk_group_member_toggle" value="yes" checked /> Yes</label>
-                                    <label style="margin-left:1em;"><input type="radio" name="dk_group_member_toggle" value="no" /> No</label>
+                                    <label><input type="radio" name="dk_group_member_toggle" value="no" /> No</label>
                                 </div>
                             </div>
                         </div>
 
                         <div class="dk-button-group dk-nav-buttons" style="margin-top:1em;">
-                            <button id="dk-group-go-back-btn" class="dk-btn dk-btn-secondary">&lt;&lt; Go Back</button>
-                            <button id="dk-group-continue-btn" class="dk-btn dk-btn-primary">Continue</button>
+                            <button id="dk-group-go-back-btn" class="dk-btn dk-btn-outline dk-btn-30">&lt;&lt; Go Back</button>
+                            <button id="dk-group-continue-btn" class="dk-btn dk-btn-primary dk-btn-70">Continue</button>
                         </div>
                     </div>
 
@@ -220,11 +220,11 @@ function dk_enrolment_flow_shortcode_output( $atts ) {
                             </div>
 
                         <div class="dk-form-footer">
-                            <button id="dk-add-new-student-btn" class="dk-btn dk-btn-secondary dk-add-student-btn" style="display:none;">Add New Student +</button>
-
+                            
                             <div class="dk-button-group dk-nav-buttons">
-                                <button id="dk-go-back-btn" class="dk-btn dk-btn-primary dk-btn-50">&lt;&lt; Go Back</button>
-                                <button id="dk-save-details-btn" class="dk-btn dk-btn-primary dk-btn-50">Save Details</button>
+                                <button id="dk-go-back-btn" class="dk-btn dk-btn-outline dk-btn-20">&lt;&lt; Go Back</button>
+                                <button id="dk-add-new-student-btn" class="dk-btn dk-btn-outline dk-btn-30 dk-add-student-btn" style="display:none;">Add New Student +</button>
+                                <button id="dk-save-details-btn" class="dk-btn dk-btn-primary dk-btn-45">Save Details</button>
                             </div>
                         </div>
 
@@ -545,6 +545,41 @@ function dk_ajax_proxy_payment_ref() {
     $api = new DK_Axcelerate_API();
     $res = $api->get_payment_ref($reference);
     if ( is_wp_error($res) ) { wp_send_json_error(array('message'=>$res->get_error_message(),'raw'=>$res->get_error_data())); wp_die(); }
+    wp_send_json_success($res);
+    wp_die();
+}
+
+/**
+ * Server-side proxy: Cancel a course enrollment
+ * Changes tentative enrollment to cancelled status
+ */
+add_action( 'wp_ajax_dk_cancel_enrolment', 'dk_ajax_cancel_enrolment' );
+add_action( 'wp_ajax_nopriv_dk_cancel_enrolment', 'dk_ajax_cancel_enrolment' );
+function dk_ajax_cancel_enrolment() {
+    $contactID = sanitize_text_field($_POST['contactID'] ?? '');
+    $instanceID = sanitize_text_field($_POST['instanceID'] ?? '');
+    $type = sanitize_text_field($_POST['type'] ?? 'w');
+    $logType = sanitize_text_field($_POST['logType'] ?? 'Cancelled');
+    
+    if ( empty($contactID) || empty($instanceID) ) {
+        wp_send_json_error(array('message' => 'contactID and instanceID are required'));
+        wp_die();
+    }
+    
+    $api = new DK_Axcelerate_API();
+    $params = array(
+        'contactID' => $contactID,
+        'instanceID' => $instanceID,
+        'type' => $type,
+        'logType' => $logType
+    );
+    
+    $res = $api->cancel_enrolment($params);
+    if ( is_wp_error($res) ) {
+        wp_send_json_error(array('message' => $res->get_error_message(), 'raw' => $res->get_error_data()));
+        wp_die();
+    }
+    
     wp_send_json_success($res);
     wp_die();
 }
