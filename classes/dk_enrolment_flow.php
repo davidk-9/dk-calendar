@@ -470,7 +470,7 @@ function dk_ajax_sync_contacts() {
 add_action( 'wp_ajax_dk_proxy_enrol', 'dk_ajax_proxy_enrol' );
 add_action( 'wp_ajax_nopriv_dk_proxy_enrol', 'dk_ajax_proxy_enrol' );
 function dk_ajax_proxy_enrol() {
-    $allowed = array('instanceID','type','contactID','invoiceID','cost','discountIDList','payerID','tentative','suppressNotifications');
+    $allowed = array('instanceID','type','contactID','invoiceID','cost','discountIDList','payerID','tentative','suppressNotifications','lockInvoiceItems');
     $params = array();
     foreach ($allowed as $k) {
         if ( isset($_POST[$k]) ) $params[$k] = sanitize_text_field($_POST[$k]);

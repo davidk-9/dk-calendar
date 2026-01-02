@@ -202,23 +202,96 @@ jQuery(document).ready(function($) {
     }
 
     // Render helpers: request a form HTML from server
-    function requestForm(index, formType = 'student', title = null, data = {}, isLocked = false, showDelete = false, syncAppend = true) {
-        return $.ajax({
-            url: DKEnrolmentData.ajax_url,
-            type: 'POST',
-            data: {
-                action: 'dk_render_student_form_html',
-                index: index,
-                student_data: data,
-                is_locked: isLocked,
-                show_delete: showDelete,
-                form_type: formType,
-                title: title
-            }
-        });
+    // Helper function to escape HTML for safe insertion
+    function escapeHtml(str) {
+        if (!str && str !== 0) return '';
+        const div = document.createElement('div');
+        div.textContent = String(str);
+        return div.innerHTML;
     }
 
-    // Render multiple forms based on state
+    // Generate form HTML client-side (replaces server-side PHP rendering)
+    function generateFormHTML(index, formType, title, data, isLocked, showDelete) {
+        data = data || {};
+        const disabled = isLocked ? 'disabled' : '';
+        const studentNum = index + 1;
+        
+        // Determine title
+        let finalTitle = title;
+        if (!finalTitle) {
+            if (formType === 'payee' || formType === 'booking_contact') {
+                finalTitle = 'Your Details';
+            } else {
+                finalTitle = 'Student ' + studentNum;
+            }
+        }
+        
+        // Escape all data values for safe HTML insertion
+        const givenName = escapeHtml(data.given_name || '');
+        const lastName = escapeHtml(data.last_name || '');
+        const email = escapeHtml(data.email || '');
+        const mobile = escapeHtml(data.mobile || '');
+        const agreement1Checked = (data.agreement_1) ? 'checked' : '';
+        const agreement2Checked = (data.agreement_2) ? 'checked' : '';
+        
+        let html = '';
+        html += '<div class="dk-student-form-block" data-index="' + index + '" data-is-locked="' + (isLocked ? 'true' : 'false') + '" data-form-type="' + escapeHtml(formType) + '">';
+        html += '  <div class="dk-form-header">';
+        html += '    <h3 class="dk-student-title">' + escapeHtml(finalTitle) + '</h3>';
+        if (showDelete) {
+            html += '    <button type="button" class="dk-btn dk-btn-delete dk-delete-student-btn" data-index="' + index + '">Delete Student</button>';
+        }
+        html += '  </div>';
+        html += '  <form class="dk-student-form">';
+        html += '    <div class="dk-form-section dk-two-column-layout">';
+        
+        // Given Name
+        html += '      <div class="dk-form-field">';
+        html += '        <label for="dk_given_name_' + index + '">Given Name*</label>';
+        html += '        <input type="text" id="dk_given_name_' + index + '" name="given_name" value="' + givenName + '" ' + disabled + ' required>';
+        html += '      </div>';
+        
+        // Last Name
+        html += '      <div class="dk-form-field">';
+        html += '        <label for="dk_last_name_' + index + '">Last Name*</label>';
+        html += '        <input type="text" id="dk_last_name_' + index + '" name="last_name" value="' + lastName + '" ' + disabled + ' required>';
+        html += '      </div>';
+        
+        // Email
+        html += '      <div class="dk-form-field">';
+        html += '        <label for="dk_email_' + index + '">Email Address*</label>';
+        html += '        <input type="email" id="dk_email_' + index + '" name="email" value="' + email + '" ' + disabled + ' required>';
+        html += '      </div>';
+        
+        // Mobile
+        html += '      <div class="dk-form-field">';
+        html += '        <label for="dk_mobile_' + index + '">Mobile*</label>';
+        html += '        <input type="tel" id="dk_mobile_' + index + '" name="mobile" value="' + mobile + '" ' + disabled + ' required>';
+        html += '      </div>';
+        
+        html += '    </div>'; // end two-column-layout
+        
+        // Agreements (only for student forms)
+        html += '    <div class="dk-form-section dk-one-column-layout">';
+        if (formType === 'student') {
+            html += '      <div class="dk-checkbox-field">';
+            html += '        <input type="checkbox" id="dk_agreement_1_' + index + '" name="agreement_1" value="1" ' + agreement1Checked + ' ' + disabled + ' required>';
+            html += '        <label for="dk_agreement_1_' + index + '">I understand the online learning and assessment component of the course must be completed before I can attend my scheduled in person session.</label>';
+            html += '      </div>';
+            html += '      <div class="dk-checkbox-field">';
+            html += '        <input type="checkbox" id="dk_agreement_2_' + index + '" name="agreement_2" value="1" ' + agreement2Checked + ' ' + disabled + ' required>';
+            html += '        <label for="dk_agreement_2_' + index + '">I am physically able to perform CPR in a kneeling position on the floor for 2 minutes.</label>';
+            html += '      </div>';
+        }
+        html += '    </div>'; // end one-column-layout
+        
+        html += '  </form>';
+        html += '</div>';
+        
+        return html;
+    }
+
+    // Render multiple forms based on state (now fully client-side)
     function renderFormsForBooking(payeeIsStudent, isGroupFlow = false) {
         const $container = $('#dk-student-forms-container').empty();
 
@@ -226,41 +299,28 @@ jQuery(document).ready(function($) {
         if (isGroupFlow) {
             $('#dk-form-view-title').text('Booking for a Group');
         }
-        $container.html('<p class="dk-loading">Loading Details Forms...</p>');
-        // Build ordered request list so we can append responses in sequence
-        const requests = [];
+        
+        // Build form list
+        const forms = [];
         if (payeeIsStudent) {
             // First form is both student1 and payee
-            requests.push({ index: 0, type: 'student', title: 'Your Details (Student 1 & Booking Contact)', data: state.students[0] || {}, showDelete: false });
+            forms.push({ index: 0, type: 'student', title: 'Your Details (Student 1 & Booking Contact)', data: state.students[0] || {}, showDelete: false });
             for (let i = 1; i < state.students.length; i++) {
-                requests.push({ index: i, type: 'student', title: 'Student ' + (i+1) + ' Details', data: state.students[i] || {}, showDelete: true });
+                forms.push({ index: i, type: 'student', title: 'Student ' + (i+1) + ' Details', data: state.students[i] || {}, showDelete: true });
             }
         } else {
             // First form is booking contact (payee)
-            requests.push({ index: 0, type: 'payee', title: 'Your Details (Booking Contact)', data: state.payee || {}, showDelete: false });
+            forms.push({ index: 0, type: 'payee', title: 'Your Details (Booking Contact)', data: state.payee || {}, showDelete: false });
             for (let i = 0; i < state.students.length; i++) {
-                requests.push({ index: i+1, type: 'student', title: 'Student ' + (i+1) + ' Details', data: state.students[i] || {}, showDelete: (i+1) > 1 });
+                forms.push({ index: i+1, type: 'student', title: 'Student ' + (i+1) + ' Details', data: state.students[i] || {}, showDelete: (i+1) > 1 });
             }
         }
 
-        // Execute requests sequentially to preserve display order
-        let chain = $.Deferred().resolve();
-        requests.forEach(function(req, idx) {
-            chain = chain.then(function() {
-                return requestForm(req.index, req.type, req.title, req.data, false, req.showDelete).done(function(r) {
-                    if (idx === 0) {
-                        // First form: clear loading message and add form
-                        $container.empty().append(r.data.html);
-                    } else {
-                        // Subsequent forms: just append
-                        $container.append(r.data.html);
-                    }
-                }).fail(function() {
-                    $container.append('<p class="dk-loading">Failed to load a form.</p>');
-                });
-            });
+        // Generate all forms instantly (no more AJAX delays!)
+        forms.forEach(function(form) {
+            const html = generateFormHTML(form.index, form.type, form.title, form.data, false, form.showDelete);
+            $container.append(html);
         });
-        return chain.promise();
     }
 
     // Generic render for single-person bookings (book myself / someone else single student)
@@ -274,33 +334,26 @@ jQuery(document).ready(function($) {
         
         $('#dk-step-1-initial-view, #dk-step-1-group-setup').hide();
         $('#dk-step-1-form-view').show();
-        // Immediate title to reduce perceived latency
         $('#dk-form-view-title').text(isBookForMyself ? 'Book for Myself' : (showPayeeAsStudent ? 'Book For Someone Else' : 'Booking'));
-        const $container = $('#dk-student-forms-container');
-
-        // Show loading placeholder while AJAX form is requested
-        $container.html('<p class="dk-loading">Loading Details Forms...</p>');
+        const $container = $('#dk-student-forms-container').empty();
 
         if (isBookForMyself) {
-            // Request student form only, no add button
             // Initialize student if needed
             if (!state.students[0]) state.students[0] = createNewStudent();
-            requestForm(0, 'student', 'Your Details (Student)', state.students[0] || {}, false, false).done(function(r) {
-                $container.empty().append(r.data.html);
-            }).fail(function(){ $container.html('<p class="dk-loading">Failed to load form. Please try again.</p>'); });
+            // Generate student form instantly
+            const html = generateFormHTML(0, 'student', 'Your Details (Student)', state.students[0] || {}, false, false);
+            $container.append(html);
             $('#dk-add-new-student-btn').hide();
         } else {
             // Booking contact + student
-            // First: booking contact (payee)
-                requestForm(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false).done(function(r) {
-                $container.empty().append(r.data.html);
-                // then student (do NOT show delete button here — always require at least one student)
-                // Initialize student if needed
-                if (!state.students[0]) state.students[0] = createNewStudent();
-                requestForm(1, 'student', 'Student Details', state.students[0] || {}, false, false).done(function(r2) {
-                    $container.append(r2.data.html);
-                }).fail(function(){ $container.append('<p class="dk-loading">Failed to load student form.</p>'); });
-            }).fail(function(){ $container.html('<p class="dk-loading">Failed to load forms. Please try again.</p>'); });
+            // Generate booking contact form
+            const payeeHtml = generateFormHTML(0, 'payee', 'Your Details (Booking Contact)', state.payee || {}, false, false);
+            $container.append(payeeHtml);
+            // Initialize student if needed
+            if (!state.students[0]) state.students[0] = createNewStudent();
+            // Generate student form (do NOT show delete button — always require at least one student)
+            const studentHtml = generateFormHTML(1, 'student', 'Student Details', state.students[0] || {}, false, false);
+            $container.append(studentHtml);
             $('#dk-add-new-student-btn').hide();
         }
     }
@@ -405,9 +458,7 @@ jQuery(document).ready(function($) {
         $('#dk-add-new-student-btn').show();
         activeFlow = 'group';
         // Render forms: using renderFormsForBooking (mark as group flow so title updates)
-        renderFormsForBooking(partOfGroup, true).done(function() {
-            // nothing extra
-        });
+        renderFormsForBooking(partOfGroup, true);
     });
 
     // Add new student button (in group flows)
@@ -415,10 +466,11 @@ jQuery(document).ready(function($) {
         if (state.students.length >= SPACES_AVAIL) { alert('Maximum number of students reached!'); return; }
         state.students.push(createNewStudent());
         saveState();
-        // request form for next index
+        // Generate form for next index
         const newIndex = state.students.length - 1 + (state.payee ? 1 : 0);
         const title = 'Student ' + (state.students.length) + ' Details';
-        requestForm(newIndex, 'student', title, {}, false, true).done(function(r) { $('#dk-student-forms-container').append(r.data.html); });
+        const html = generateFormHTML(newIndex, 'student', title, {}, false, true);
+        $('#dk-student-forms-container').append(html);
     });
 
     // Delete student handler (delegated)
@@ -801,7 +853,8 @@ jQuery(document).ready(function($) {
                         }
                         
                         // Finalize all students with tentative=false and suppressNotifications=false
-                        const finalizeOps = [];
+                        // Build list of students to finalize
+                        const studentsToFinalize = [];
                         students.forEach(function(student, idx) {
                             const contactID = student.ax_contact_id || student.ax_contact || 0;
                             if (!contactID) {
@@ -822,14 +875,23 @@ jQuery(document).ready(function($) {
                             
                             const paramsObj = {};
                             params.forEach(function(p){ const parts = p.split('='); paramsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
-                            console.debug('Finalizing enrollment for student', idx, paramsObj);
+                            console.debug('Preparing finalization for student', idx, paramsObj);
                             
-                            finalizeOps.push(proxyEnrol(paramsObj).fail(function(xhr){
-                                console.error('Failed to finalize enrollment for student', idx, xhr && xhr.responseText);
-                            }));
+                            studentsToFinalize.push({ idx: idx, paramsObj: paramsObj });
                         });
                         
-                        $.when.apply($, finalizeOps).always(function(){
+                        // Finalize enrollments sequentially to avoid race conditions
+                        let finalizeChain = $.Deferred().resolve().promise();
+                        studentsToFinalize.forEach(function(studentData) {
+                            finalizeChain = finalizeChain.then(function() {
+                                console.log('Finalizing enrollment for student', studentData.idx);
+                                return proxyEnrol(studentData.paramsObj).fail(function(xhr){
+                                    console.error('Failed to finalize enrollment for student', studentData.idx, xhr && xhr.responseText);
+                                });
+                            });
+                        });
+                        
+                        finalizeChain.always(function(){
                             console.log('All enrollments finalized');
                             closeProcessModal();
                             $('#dk-payment-status-message').html('<strong style="color:green;">Payment successful — thank you!</strong><br>Your enrollment has been confirmed. You will receive an email shortly with booking confirmation and invoice/receipt.');
@@ -1269,6 +1331,12 @@ jQuery(document).ready(function($) {
                         firstParams.push('contactID=' + encodeURIComponent(firstContact));
                         firstParams.push('tentative=1');
                         firstParams.push('suppressNotifications=1');
+                        // Lock invoice only if this is the only student, otherwise keep open for more students
+                        if (students.length === 1) {
+                            firstParams.push('lockInvoiceItems=1');
+                        } else {
+                            firstParams.push('lockInvoiceItems=0');
+                        }
                         if (payeeContact && payeeContact !== firstContact) firstParams.push('payerID=' + encodeURIComponent(payeeContact));
                         if (typeof first.revised_price !== 'undefined' && first.revised_price !== null) firstParams.push('cost=' + encodeURIComponent(parseFloat(first.revised_price).toFixed(2)));
                         if (first.discount_id) firstParams.push('discountIDList=' + encodeURIComponent(first.discount_id));
@@ -1322,6 +1390,8 @@ jQuery(document).ready(function($) {
                             updateProcessModal('Enrolling ' + (students.length - 1) + ' additional student(s) tentatively...');
                         }
                         
+                        // First pass: determine which students need enrollment
+                        const studentsToEnrol = [];
                         for (let i = 1; i < students.length; i++) {
                             const s = students[i];
                             const contactID = s.ax_contact_id || s.ax_contact || 0;
@@ -1339,6 +1409,18 @@ jQuery(document).ready(function($) {
                                 continue; // Skip this student, already enrolled
                             }
                             
+                            studentsToEnrol.push(i);
+                        }
+                        
+                        // Second pass: enrol the students that need it SEQUENTIALLY (not in parallel)
+                        // This ensures lockInvoiceItems on the last student happens after all others are added
+                        let enrolChain = $.Deferred().resolve();
+                        
+                        for (let idx = 0; idx < studentsToEnrol.length; idx++) {
+                            const i = studentsToEnrol[idx];
+                            const s = students[i];
+                            const contactID = s.ax_contact_id || s.ax_contact || 0;
+                            
                             const params = [];
                             params.push('instanceID=' + encodeURIComponent(INSTANCE_ID));
                             params.push('type=w');
@@ -1346,35 +1428,45 @@ jQuery(document).ready(function($) {
                             params.push('invoiceID=' + encodeURIComponent(invoiceID));
                             params.push('tentative=1');
                             params.push('suppressNotifications=1');
+                            // Lock invoice only on the LAST student that actually needs enrollment
+                            if (idx === studentsToEnrol.length - 1) {
+                                params.push('lockInvoiceItems=1');
+                            } else {
+                                params.push('lockInvoiceItems=0');
+                            }
+                            if (payeeContact && payeeContact !== contactID) params.push('payerID=' + encodeURIComponent(payeeContact));
                             if (typeof s.revised_price !== 'undefined' && s.revised_price !== null) params.push('cost=' + encodeURIComponent(parseFloat(s.revised_price).toFixed(2)));
                             if (s.discount_id) params.push('discountIDList=' + encodeURIComponent(s.discount_id));
                             const paramsObj = {};
                             params.forEach(function(p){ const parts = p.split('='); paramsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
-                            console.debug('Pay Now: enrolling additional student (tentative)', i, paramsObj);
                             
-                            enrolOps.push(proxyEnrol(paramsObj).done(function(r2){
-                                console.debug('proxyEnrol response for additional student', i, r2);
-                                const p2 = unwrap(r2);
-                                if (!(p2 && (p2.INVOICEID || p2.CONTACTID))) {
-                                    console.warn('Enrol for additional student returned unexpected result', i, p2);
-                                    enrolFailures.push('Student ' + (i + 1) + ' enrollment returned invalid response');
-                                } else {
-                                    // Save enrollment status and learner ID
-                                    const learnerID = p2.LEARNERID || null;
-                                    state.students[i].enrollment_status = 'tentative';
-                                    state.students[i].learner_id = learnerID;
-                                    state.students[i].enrolled_at = Date.now();
-                                    saveState();
-                                    console.debug('Student', i, 'enrolled: status=tentative, learnerID=', learnerID);
-                                }
-                            }).fail(function(xhr){ 
-                                console.error('Enrol API failed for additional student', i, xhr && xhr.responseText);
-                                enrolFailures.push('Student ' + (i + 1) + ' enrollment failed: ' + (xhr.responseText || 'Unknown error'));
-                            }));
+                            // Chain this enrollment to happen AFTER the previous one completes
+                            enrolChain = enrolChain.then(function() {
+                                console.debug('Pay Now: enrolling additional student (tentative)', i, paramsObj);
+                                return proxyEnrol(paramsObj).done(function(r2){
+                                    console.debug('proxyEnrol response for additional student', i, r2);
+                                    const p2 = unwrap(r2);
+                                    if (!(p2 && (p2.INVOICEID || p2.CONTACTID))) {
+                                        console.warn('Enrol for additional student returned unexpected result', i, p2);
+                                        enrolFailures.push('Student ' + (i + 1) + ' enrollment returned invalid response');
+                                    } else {
+                                        // Save enrollment status and learner ID
+                                        const learnerID = p2.LEARNERID || null;
+                                        state.students[i].enrollment_status = 'tentative';
+                                        state.students[i].learner_id = learnerID;
+                                        state.students[i].enrolled_at = Date.now();
+                                        saveState();
+                                        console.debug('Student', i, 'enrolled: status=tentative, learnerID=', learnerID);
+                                    }
+                                }).fail(function(xhr){ 
+                                    console.error('Enrol API failed for additional student', i, xhr && xhr.responseText);
+                                    enrolFailures.push('Student ' + (i + 1) + ' enrollment failed: ' + (xhr.responseText || 'Unknown error'));
+                                });
+                            });
                         }
-
-                        // After all student enrols complete (or immediately if none), validate all are enrolled
-                        $.when.apply($, enrolOps.length ? enrolOps : [$.Deferred().resolve()]).always(function(){
+                        
+                        // After all sequential enrollments complete, validate all are enrolled
+                        enrolChain.always(function(){
                             console.debug('Pay Now: all tentative enrol ops complete');
                             
                             // Validate ALL students have enrollment_status = 'tentative' or higher
