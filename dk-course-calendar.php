@@ -27,12 +27,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 include_once plugin_dir_path( __FILE__ ) . 'classes/dk_enrolment_flow.php';
 // NOTE: dk_axcelerate_api_helper.php is included inside dk_enrolment_flow.php later
 
+// Include legacy functions from theme functions.php (for backwards compatibility)
+include_once plugin_dir_path( __FILE__ ) . 'dk-legacy-functions.php';
+
 // Register the new shortcode
 add_shortcode( 'dk_enrolment_flow', 'dk_enrolment_flow_shortcode_output' );
 
 // Register the AJAX handler for rendering the student form HTML
 add_action( 'wp_ajax_dk_render_student_form_html', 'dk_ajax_render_student_form_html' );
 add_action( 'wp_ajax_nopriv_dk_render_student_form_html', 'dk_ajax_render_student_form_html' );
+
+// Register external cron endpoint
+add_action( 'wp_ajax_dk_manual_sync', 'dk_ajax_manual_sync' );
+add_action( 'wp_ajax_nopriv_dk_manual_sync', 'dk_ajax_manual_sync' );
 
 
 // ====================================================================
@@ -118,11 +125,15 @@ function dk_calendar_register_settings() {
     register_setting( 'dk_calendar_settings', 'dk_enrol_page_slug', 'sanitize_text_field' ); 
     register_setting( 'dk_calendar_settings', 'dk_webhook_log', 'wp_kses_post' ); 
     register_setting( 'dk_calendar_settings', 'dk_last_full_sync', 'sanitize_text_field' );
+    register_setting( 'dk_calendar_settings', 'dk_cron_secret_key', 'sanitize_text_field' );
     
     // --- NEW: Enrolment Step Titles ---
     register_setting( 'dk_calendar_settings', 'dk_enrol_step_1_title', 'sanitize_text_field' );
     register_setting( 'dk_calendar_settings', 'dk_enrol_step_2_title', 'sanitize_text_field' );
     register_setting( 'dk_calendar_settings', 'dk_enrol_step_3_title', 'sanitize_text_field' );
+    
+    // --- Booking Rules ---
+    register_setting( 'dk_calendar_settings', 'dk_min_booking_hours', 'absint' );
 
     // --- 2. API Credentials Section ---
     add_settings_section(
@@ -156,6 +167,18 @@ function dk_calendar_register_settings() {
         )
     );
     
+    add_settings_field(
+        'cron_secret_key', 
+        'Cron Secret Key (for external cron endpoint)', 
+        'dk_render_text_field', 
+        'dk-course-calendar', 
+        'dk_webhook_security_section', 
+        array( 
+            'label_for' => 'dk_cron_secret_key',
+            'option_name' => 'dk_cron_secret_key' 
+        )
+    );
+    
     // --- 4. Frontend Settings Section ---
     add_settings_section(
         'dk_frontend_section', 
@@ -180,6 +203,26 @@ function dk_calendar_register_settings() {
     dk_add_enrolment_title_field( 'step_1_title', 'Step 1 Title', 'dk_enrol_step_1_title' );
     dk_add_enrolment_title_field( 'step_2_title', 'Step 2 Title', 'dk_enrol_step_2_title' );
     dk_add_enrolment_title_field( 'step_3_title', 'Step 3 Title', 'dk_enrol_step_3_title' );
+    
+    // --- Booking Rules Section ---
+    add_settings_section(
+        'dk_booking_rules_section', 
+        'Booking Rules', 
+        'dk_booking_rules_section_callback', 
+        'dk-course-calendar' 
+    );
+    
+    add_settings_field(
+        'min_booking_hours', 
+        'Minimum Hours Before Workshop Start', 
+        'dk_render_min_hours_field', 
+        'dk-course-calendar', 
+        'dk_booking_rules_section', 
+        array( 
+            'label_for' => 'dk_min_booking_hours',
+            'option_name' => 'dk_min_booking_hours' 
+        )
+    );
 }
 
 // Section intro text callbacks
@@ -194,6 +237,9 @@ function dk_frontend_section_callback() {
 }
 function dk_enrolment_titles_section_callback() {
     echo '<p>Set the display titles for the three steps in the enrolment flow.</p>';
+}
+function dk_booking_rules_section_callback() {
+    echo '<p>Configure booking restrictions to prevent last-minute course enrollments.</p>';
 }
 
 // Helper function to add a settings field and ensure consistent rendering
@@ -239,6 +285,19 @@ function dk_render_text_field( $args ) {
                 name="' . esc_attr( $args['option_name'] ) . '" 
                 value="' . esc_attr( $option ) . '" 
                 class="regular-text">';
+}
+
+// Render minimum booking hours field with description
+function dk_render_min_hours_field( $args ) {
+    $option = get_option( $args['option_name'], 6 ); // Default 6 hours
+    echo '<input type="number" 
+                id="' . esc_attr( $args['option_name'] ) . '" 
+                name="' . esc_attr( $args['option_name'] ) . '" 
+                value="' . esc_attr( $option ) . '" 
+                min="0" 
+                max="168" 
+                class="small-text"> hours';
+    echo '<p class="description">Students must book at least this many hours before the workshop starts. Set to 0 to disable. Default: 6 hours.</p>';
 }
 
 // ====================================================================
@@ -435,6 +494,53 @@ function dk_calendar_render_review_tab() {
 }
 
 // ====================================================================
+// D2. EXTERNAL CRON ENDPOINT FOR MANUAL SYNC
+// ====================================================================
+
+/**
+ * AJAX handler for external cron service to trigger sync
+ * URL: https://yourdomain.com/wp-admin/admin-ajax.php?action=dk_manual_sync&key=YOUR_SECRET_KEY
+ */
+function dk_ajax_manual_sync() {
+    // Get the secret key from settings
+    $stored_key = get_option( 'dk_cron_secret_key' );
+    
+    // Get the key from the request
+    $provided_key = isset( $_GET['key'] ) ? sanitize_text_field( $_GET['key'] ) : '';
+    
+    // Validate the key
+    if ( empty( $stored_key ) ) {
+        status_header( 500 );
+        wp_send_json_error( array( 'message' => 'Cron secret key not configured in settings' ) );
+        exit;
+    }
+    
+    if ( empty( $provided_key ) || $provided_key !== $stored_key ) {
+        status_header( 403 );
+        wp_send_json_error( array( 'message' => 'Invalid or missing secret key' ) );
+        exit;
+    }
+    
+    // Key is valid, run the sync
+    error_log( 'DK Manual Sync: Starting sync triggered by external cron' );
+    dk_calendar_perform_sync();
+    
+    // Check if sync was successful
+    $sync_error = get_transient( 'dk_calendar_sync_error' );
+    if ( $sync_error ) {
+        status_header( 500 );
+        wp_send_json_error( array( 'message' => 'Sync failed', 'error' => $sync_error ) );
+    } else {
+        $last_sync = get_option( 'dk_last_full_sync', 'Never' );
+        wp_send_json_success( array( 
+            'message' => 'Sync completed successfully', 
+            'last_sync' => $last_sync 
+        ) );
+    }
+    exit;
+}
+
+// ====================================================================
 // E. THE MAIN SYNCHRONIZATION FUNCTION (API PULL)
 // ====================================================================
 
@@ -622,12 +728,13 @@ function dk_calendar_handle_webhook( $request ) {
     $monitored_events = [
         'student.workshop_enrolment_created', 
         'student.workshop_enrolment_deleted', 
-        'student.workshop_enrolment_status_changed' 
+        'student.workshop_enrolment_status_changed'
     ];
 
+    // Check if event is monitored and has valid instance ID
     if ( ! in_array( $event_type, $monitored_events ) || $instance_id === 0 ) {
-         error_log( 'DK Webhook: Skipping non-monitored event or missing ID: ' . $event_type );
-         return new WP_REST_Response( array( 'message' => 'Not monitored or invalid payload.' ), 200 );
+         error_log( 'DK Webhook: Missing instance ID for workshop event: ' . $event_type );
+         return new WP_REST_Response( array( 'message' => 'Invalid payload - missing instance ID.' ), 200 );
     }
 
     // Trigger the single instance sync to get the current definitive vacancy count
@@ -790,14 +897,31 @@ function dk_calendar_enqueue_assets() {
         wp_enqueue_script( 'dk-enrolment-script' );
         
         // --- 3. Localize Script (Pass PHP variables to JavaScript) ---
+        // AGGRESSIVE FILTER: Strip malformed parameter names and values
+        $clean_filters = array();
+        
+        // Only process parameters with clean, expected names
+        $allowed_params = array('c_id', 'l_name', 'd_from', 'd_to');
+        foreach ($allowed_params as $param) {
+            if (isset($_GET[$param]) && is_string($_GET[$param])) {
+                $value = sanitize_text_field($_GET[$param]);
+                // Only include non-empty values that don't contain 'http'
+                if (!empty($value) && strpos($value, 'http') === false && strpos($value, '://') === false) {
+                    $clean_filters[$param] = $value;
+                } elseif ($param === 'd_from' || $param === 'd_to') {
+                    // Always include date params even if empty (will default later)
+                    $clean_filters[$param] = $value;
+                }
+            }
+        }
+        
         $js_data = array(
             'ajax_url' => admin_url( 'admin-ajax.php' ),
             'course_id_selector' => get_option( 'dk_frontend_course_id' ),
             'location_id_selector' => get_option( 'dk_frontend_location_id' ),
             'js_function_name' => get_option( 'dk_frontend_js_function' ),
-            'current_url' => home_url( add_query_arg( null, null ) ),
             'enrol_page_slug' => get_option( 'dk_enrol_page_slug' ),
-            'current_filters' => $_GET // Pass all current filters for AJAX reuse
+            'current_filters' => $clean_filters
         );
         wp_localize_script( 'dk-calendar-script', 'DKCalendarData', $js_data );
         
@@ -888,6 +1012,19 @@ function dk_calendar_ajax_render() {
     $sql_where[] = 'vacancy > 0';
     $sql_where[] = 'is_public = 1';
     $sql_where[] = 'enrolment_open = 1';
+    $sql_where[] = "status = 'Active'";
+    
+    // Add minimum booking hours filter
+    $min_hours = intval( get_option( 'dk_min_booking_hours', 6 ) );
+    if ( $min_hours > 0 ) {
+        $cutoff_time = current_time( 'mysql' );
+        $cutoff_datetime = new DateTime( $cutoff_time );
+        $cutoff_datetime->modify( '+' . $min_hours . ' hours' );
+        $cutoff_formatted = $cutoff_datetime->format( 'Y-m-d H:i:s' );
+        
+        $sql_where[] = 'CONCAT(start_date, " ", start_time) >= %s';
+        $sql_args[] = $cutoff_formatted;
+    }
 
     $where_clause = count( $sql_where ) > 0 ? 'WHERE ' . implode( ' AND ', $sql_where ) : '';
     
@@ -918,15 +1055,19 @@ function dk_calendar_ajax_render() {
     $next_month = (new DateTime( $date_min ))->modify('+1 month')->format('Y-m-01');
     
     // Function to rebuild URL with new month while preserving other filters
-    // This logic is now handled by JS for the AJAX request
     $rebuild_url = function($new_date) use ($filter_course, $filter_location) {
         $args = array(
-            'c_id' => $filter_course,
-            'l_name' => $filter_location,
             'd_from' => $new_date,
-            'd_to' => (new DateTime($new_date))->format('Y-m-t') 
+            'd_to' => (new DateTime($new_date))->format('Y-m-t')
         );
-        // We only need the query string part
+        // Only add filter params if they have valid, clean values
+        if (!empty($filter_course) && is_string($filter_course) && strpos($filter_course, 'http') === false) {
+            $args['c_id'] = $filter_course;
+        }
+        if (!empty($filter_location) && is_string($filter_location) && strpos($filter_location, 'http') === false) {
+            $args['l_name'] = $filter_location;
+        }
+        
         return http_build_query($args);
     };
 
@@ -939,9 +1080,9 @@ function dk_calendar_ajax_render() {
     ?>
     <div id="dk-calendar-content">
         <div class="dk-calendar-header">
-            <a href="?<?php echo esc_url($prev_query); ?>" class="dk-nav-btn dk-prev-month">&lt; Previous Month</a>
+            <a href="?<?php echo esc_attr($prev_query); ?>" class="dk-nav-btn dk-prev-month">&lt; Previous Month</a>
             <h2><?php echo esc_html( $current_month->format('F Y') ); ?></h2>
-            <a href="?<?php echo esc_url($next_query); ?>" class="dk-nav-btn dk-next-month">Next Month &gt;</a>
+            <a href="?<?php echo esc_attr($next_query); ?>" class="dk-nav-btn dk-next-month">Next Month &gt;</a>
         </div>
         
         <div class="dk-content-container"> 

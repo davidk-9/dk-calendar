@@ -153,7 +153,7 @@ function dk_enrolment_flow_shortcode_output( $atts ) {
         
         <div class="dk-course-header">
             <h3>Enrolling in: <?php echo esc_html($course_name); ?> (<?php echo esc_html($course_code); ?>)</h3>
-            <p><strong>Date:</strong> <?php echo esc_html($course_date); ?> | <strong>Time:</strong> <?php echo esc_html($course_time); ?> | <strong>Location:</strong> <?php echo esc_html($course_location); ?> | <strong>Cost/Student:</strong> <?php echo esc_html($course_cost_raw); ?></p>
+            <p><strong>Date:</strong> <?php echo esc_html($course_date); ?> | <strong>Time:</strong> <?php echo esc_html($course_time); ?> | <strong>Location:</strong> <?php echo esc_html($course_location); ?> | <strong id="dk-header-cost-label">Cost/Student:</strong> <span id="dk-header-cost-display">$<?php echo esc_html($course_cost_raw); ?></span></p>
         </div>
         
         <div class="dk-tab-control-container">
@@ -171,7 +171,17 @@ function dk_enrolment_flow_shortcode_output( $atts ) {
             
             <div class="dk-tab-content-area">
                 
-                <div id="dk-step-1" class="dk-step-content dk-active-content" data-instance-id="<?php echo esc_attr($instance_id); ?>" data-instance-cost="<?php echo esc_attr(floatval(str_replace(['$', ','], '', $course_cost_raw))); ?>" data-spaces-avail="<?php echo esc_attr($spaces_avail); ?>" data-course-type="w" style="display:block;">
+                <div id="dk-step-1" class="dk-step-content dk-active-content" 
+                     data-instance-id="<?php echo esc_attr($instance_id); ?>" 
+                     data-instance-cost="<?php echo esc_attr(floatval(str_replace(['$', ','], '', $course_cost_raw))); ?>" 
+                     data-spaces-avail="<?php echo esc_attr($spaces_avail); ?>" 
+                     data-course-type="w"
+                     data-instance-name="<?php echo esc_attr($course_name); ?>"
+                     data-course-code="<?php echo esc_attr($course_code); ?>"
+                     data-course-date="<?php echo esc_attr($course_date); ?>"
+                     data-course-time="<?php echo esc_attr($course_time); ?>"
+                     data-course-location="<?php echo esc_attr($course_location); ?>" 
+                     style="display:block;">
                     
                     <div id="dk-step-1-initial-view">
                         <h2 class="dk-content-title">Student Details</h2>
@@ -470,7 +480,7 @@ function dk_ajax_sync_contacts() {
 add_action( 'wp_ajax_dk_proxy_enrol', 'dk_ajax_proxy_enrol' );
 add_action( 'wp_ajax_nopriv_dk_proxy_enrol', 'dk_ajax_proxy_enrol' );
 function dk_ajax_proxy_enrol() {
-    $allowed = array('instanceID','type','contactID','invoiceID','cost','discountIDList','payerID','tentative','suppressNotifications','lockInvoiceItems');
+    $allowed = array('instanceID','type','contactID','invoiceID','cost','discountIDList','payerID','tentative','suppressNotifications','lockInvoiceItems','blockAdminNotification');
     $params = array();
     foreach ($allowed as $k) {
         if ( isset($_POST[$k]) ) $params[$k] = sanitize_text_field($_POST[$k]);

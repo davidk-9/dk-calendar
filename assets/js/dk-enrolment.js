@@ -9,11 +9,90 @@ jQuery(document).ready(function($) {
     const COURSE_COST_RAW = parseFloat($('#dk-step-1').data('instance-cost')) || 0;
     const SPACES_AVAIL = parseInt($('#dk-step-1').data('spaces-avail')) || 999;
     const INSTANCE_ID = $('#dk-step-1').data('instance-id');
+    const COURSE_DATE = $('#dk-step-1').data('course-date') || '';
+    const COURSE_TIME = $('#dk-step-1').data('course-time') || '';
 
     // API base: prefer configured DKEnrolmentData.api_base when Axcelerate/API sits on another host
     const API_BASE = (typeof DKEnrolmentData !== 'undefined' && DKEnrolmentData.api_base && DKEnrolmentData.api_base.length)
         ? DKEnrolmentData.api_base.replace(/\/$/, '')
         : window.location.origin;
+    
+    // Check if workshop start date/time is in the past
+    function isWorkshopExpired() {
+        if (!COURSE_DATE) {
+            console.warn('Workshop date not available, allowing enrollment');
+            return false;
+        }
+        
+        try {
+            // Combine date and time to create a full datetime
+            let dateTimeString = COURSE_DATE;
+            if (COURSE_TIME) {
+                // If time contains a range (e.g. "12:45 am – 2:45 pm"), extract only the start time
+                let startTime = COURSE_TIME;
+                if (startTime.includes('–') || startTime.includes('-')) {
+                    startTime = startTime.split(/[–-]/)[0].trim();
+                }
+                dateTimeString += ' ' + startTime;
+            }
+            
+            // Parse the start date/time
+            const startDateTime = new Date(dateTimeString);
+            const now = new Date();
+            
+            // Check if the start date is valid and if it's in the past
+            if (isNaN(startDateTime.getTime())) {
+                console.warn('Invalid start date format, allowing enrollment:', dateTimeString);
+                return false;
+            }
+            
+            console.log('Workshop start time:', startDateTime, 'Current time:', now, 'Expired:', startDateTime < now);
+            return startDateTime < now;
+        } catch (e) {
+            console.error('Error parsing workshop start date:', e);
+            return false; // Allow enrollment if there's an error parsing the date
+        }
+    }
+    
+    // Show expired workshop message and hide enrollment form
+    function showExpiredWorkshopMessage() {
+        const courseName = $('#dk-step-1').data('instance-name') || 'this workshop';
+        const courseCode = $('#dk-step-1').data('course-code') || '';
+        const courseDate = COURSE_DATE || '';
+        
+        // Helper function to escape HTML - using the one defined later in the file
+        const escapeText = function(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        };
+        
+        let message = '<div style="text-align: center; padding: 40px 20px;">';
+        message += '<div style="font-size: 3em; color: #cd2996; margin-bottom: 20px;">⏰</div>';
+        message += '<h2 style="color: #333; margin-bottom: 15px;">Workshop No Longer Available</h2>';
+        message += '<p style="font-size: 1.1em; color: #666; margin-bottom: 10px;">Sorry, <strong>' + escapeText(courseCode ? courseCode + ' - ' + courseName : courseName) + '</strong></p>';
+        if (courseDate) {
+            message += '<p style="color: #999; margin-bottom: 25px;">scheduled for ' + escapeText(courseDate) + '</p>';
+        }
+        message += '<p style="color: #666; margin-bottom: 30px;">is no longer accepting bookings as it has already started or taken place.</p>';
+        message += '<p style="font-size: 1.1em; margin-bottom: 30px;"><strong>Please visit our course calendar to find upcoming workshops.</strong></p>';
+        message += '<a href="/" class="dk-btn dk-btn-primary" style="display: inline-block; padding: 12px 30px; text-decoration: none;">Return to Course Calendar</a>';
+        message += '</div>';
+        
+        // Hide all step content and tab navigation
+        $('.dk-tab-control-container').hide();
+        
+        // Show the message in the wrapper
+        $('#dk-enrolment-wrapper').prepend('<div id="dk-expired-workshop-message" class="dk-enrolment-error" style="background: #fff3cd; border: 2px solid #ffc107; border-radius: 8px; margin: 20px 0;">' + message + '</div>');
+    }
+    
+    // Run validation check immediately on page load
+    if (isWorkshopExpired()) {
+        console.warn('Workshop has expired, showing error message');
+        showExpiredWorkshopMessage();
+        return; // Exit early to prevent any enrollment functionality from loading
+    }
+    
     // JS proxy helpers: if server-side proxy is available we'll use WP AJAX actions to avoid exposing tokens client-side
     function proxyEnrol(paramsObj) {
         // paramsObj is an object of query params (instanceID, type, contactID, invoiceID, cost, discountIDList, payerID...)
@@ -122,7 +201,8 @@ jQuery(document).ready(function($) {
     }
 
     function isPayeeLocked() {
-        return !!(state.invoiceID);
+        // Payee is locked if invoice exists (even if ID is 0 for 100% discounts)
+        return (typeof state.invoiceID !== 'undefined' && state.invoiceID !== null);
     }
 
     function canNavigateBack() {
@@ -208,6 +288,117 @@ jQuery(document).ready(function($) {
         const div = document.createElement('div');
         div.textContent = String(str);
         return div.innerHTML;
+    }
+
+    // Generate detailed success message with personalized content
+    function generateSuccessMessage() {
+        // Get course details from the page data attributes
+        const courseName = $('#dk-step-1').data('instance-name') || 'the selected course';
+        const courseCode = $('#dk-step-1').data('course-code') || '';
+        const courseDate = $('#dk-step-1').data('course-date') || '';
+        const courseTime = $('#dk-step-1').data('course-time') || '';
+        const courseLocation = $('#dk-step-1').data('course-location') || '';
+        
+        // Get payee name
+        const payee = state.payee || (state.students && state.students.length ? state.students[0] : null);
+        const payeeName = payee ? (payee.given_name || payee.givenName || '') + ' ' + (payee.last_name || payee.lastName || payee.surname || '') : 'valued customer';
+        
+        // Build student list
+        const students = state.students || [];
+        let studentListHtml = '';
+        
+        if (students.length > 0) {
+            students.forEach(function(student) {
+                const fullName = (student.given_name || student.givenName || '') + ' ' + (student.last_name || student.lastName || student.surname || '');
+                studentListHtml += '<li style="margin: 5px 0;">' + escapeHtml(fullName.trim()) + '</li>';
+            });
+        }
+        
+        // Build the complete message
+        let html = '<div style="text-align: left; max-width: 600px; margin: 0 auto;">';
+        html += '<strong style="color:green; font-size: 1.2em;">Payment Successful — Thank You!</strong><br><br>';
+        html += '<p style="margin: 10px 0;"><strong>Thank you ' + escapeHtml(payeeName.trim()) + ',</strong></p>';
+        
+        if (students.length > 0) {
+            html += '<p style="margin: 10px 0;">The following ' + (students.length === 1 ? 'student has' : 'students have') + ' been successfully booked:</p>';
+            html += '<ul style="list-style: none; padding-left: 0; margin: 10px 0 20px 0;">' + studentListHtml + '</ul>';
+        }
+        
+        html += '<p style="margin: 10px 0;"><strong>Course Details:</strong></p>';
+        html += '<div style="background: #f5f5f5; padding: 15px; border-radius: 4px; margin: 10px 0;">';
+        
+        if (courseCode) {
+            html += '<p style="margin: 5px 0;"><strong>Course:</strong> ' + escapeHtml(courseCode) + ' - ' + escapeHtml(courseName) + '</p>';
+        } else {
+            html += '<p style="margin: 5px 0;"><strong>Course:</strong> ' + escapeHtml(courseName) + '</p>';
+        }
+        
+        if (courseDate) {
+            html += '<p style="margin: 5px 0;"><strong>Date:</strong> ' + escapeHtml(courseDate) + '</p>';
+        }
+        
+        if (courseTime) {
+            html += '<p style="margin: 5px 0;"><strong>Time:</strong> ' + escapeHtml(courseTime) + '</p>';
+        }
+        
+        if (courseLocation) {
+            html += '<p style="margin: 5px 0;"><strong>Location:</strong> ' + escapeHtml(courseLocation) + '</p>';
+        }
+        
+        html += '</div>';
+        html += '<p style="margin: 15px 0 0 0;"><em>Booking confirmations will be sent via email to both payee and students.</em></p>';
+        html += '</div>';
+        
+        return html;
+    }
+
+    // Helper function: Update course header with discount info
+    function updateCourseHeaderCost() {
+        const students = state.students || [];
+        if (students.length === 0) return;
+        
+        // Check if any student has a discount applied
+        let hasDiscounts = false;
+        let lowestDiscountedPrice = COURSE_COST_RAW;
+        
+        students.forEach(function(student) {
+            if (typeof student.revised_price !== 'undefined' && student.revised_price !== null) {
+                hasDiscounts = true;
+                const revised = parseFloat(student.revised_price);
+                if (revised < lowestDiscountedPrice) {
+                    lowestDiscountedPrice = revised;
+                }
+            }
+        });
+        
+        const $costDisplay = $('#dk-header-cost-display');
+        const $costLabel = $('#dk-header-cost-label');
+        
+        if (hasDiscounts) {
+            // Show original cost (strikethrough) and discounted cost
+            const originalCostFormatted = '$' + COURSE_COST_RAW.toFixed(2);
+            const discountedCostFormatted = '$' + lowestDiscountedPrice.toFixed(2);
+            
+            $costLabel.text('Cost/Student:');
+            $costDisplay.html(
+                '<span style="text-decoration: line-through; color: #999;">' + escapeHtml(originalCostFormatted) + '</span> ' +
+                '<span style="color: #cd2996; font-weight: bold;">' + escapeHtml(discountedCostFormatted) + '</span>'
+            );
+        } else {
+            // Reset to original display
+            $costLabel.text('Cost/Student:');
+            $costDisplay.html('$' + COURSE_COST_RAW.toFixed(2));
+        }
+    }
+
+    // Helper function: Scroll to top of enrolment wrapper
+    function scrollToEnrolmentTop() {
+        const $wrapper = $('#dk-enrolment-wrapper');
+        if ($wrapper.length) {
+            $('html, body').animate({
+                scrollTop: $wrapper.offset().top - 20
+            }, 400);
+        }
     }
 
     // Generate form HTML client-side (replaces server-side PHP rendering)
@@ -672,6 +863,7 @@ jQuery(document).ready(function($) {
             $('#dk-form-view-title').text('Book for Myself');
             $('#dk-add-new-student-btn').hide();
             renderFormsForBooking(true, false); // payeeIsStudent=true, isGroupFlow=false
+            scrollToEnrolmentTop(); // Manual scroll for step 1 restoration
         } else if (state.current_flow === 'step1-someone') {
             // User was in "book someone else" flow
             activeFlow = 'someone';
@@ -680,6 +872,7 @@ jQuery(document).ready(function($) {
             $('#dk-form-view-title').text('Book For Someone Else');
             $('#dk-add-new-student-btn').hide();
             renderFormsForBooking(false, false); // payeeIsStudent=false, isGroupFlow=false
+            scrollToEnrolmentTop(); // Manual scroll for step 1 restoration
         } else if (state.current_flow === 'step1-group-setup') {
             // User was on group setup screen
             $('#dk-step-1-initial-view').hide();
@@ -689,6 +882,7 @@ jQuery(document).ready(function($) {
             if (state.flow_data.payee_is_student !== undefined) {
                 $('input[name="dk_group_member_toggle"][value="' + (state.flow_data.payee_is_student ? 'yes' : 'no') + '"]').prop('checked', true);
             }
+            scrollToEnrolmentTop(); // Manual scroll for step 1 restoration
         } else if (state.current_flow === 'step1-group-forms') {
             // User was filling in group forms
             activeFlow = 'group';
@@ -698,6 +892,7 @@ jQuery(document).ready(function($) {
             $('#dk-add-new-student-btn').show();
             const payeeIsStudent = state.flow_data.payee_is_student || (!state.payee && state.students.length > 0);
             renderFormsForBooking(payeeIsStudent, true); // isGroupFlow=true
+            scrollToEnrolmentTop(); // Manual scroll for step 1 restoration
         }
     } else if (state.payee || (state.students && state.students.length>0)) {
         // Fallback: If we have saved data but no current_flow, go to step 1 and render forms accordingly
@@ -708,6 +903,7 @@ jQuery(document).ready(function($) {
         $('#dk-step-1-form-view').show();
         $('#dk-add-new-student-btn').toggle( (state.students.length>1) );
         renderFormsForBooking(payeeIsStudent, activeFlow === 'group');
+        scrollToEnrolmentTop(); // Manual scroll for step 1 restoration
     }
 
     // Detect return from hosted checkout (e.g. Stripe) via URL query params
@@ -786,6 +982,9 @@ jQuery(document).ready(function($) {
         if (step === 3) {
             renderStep3();
         }
+        
+        // Scroll to top of enrolment form
+        scrollToEnrolmentTop();
     }
 
     // Render Step 3: payment / result viewer
@@ -808,9 +1007,21 @@ jQuery(document).ready(function($) {
             checkPaymentAndFinalize();
         });
 
-        // Auto-check if we already have an invoiceGUID (either in state or URL)
-        if (state.invoiceGUID || getInvoiceRefFromUrl()) {
-            $('#dk-check-payment-status').trigger('click');
+        // Check if enrollments are already confirmed (100% discount scenario)
+        const allConfirmed = state.students && state.students.length > 0 && 
+            state.students.every(function(s){ return s.enrollment_status === 'confirmed'; });
+        
+        if (allConfirmed) {
+            // Enrollments already finalized (no payment required) - show success immediately
+            console.log('Enrollments already confirmed - showing success message');
+            $('#dk-payment-status-message').html(generateSuccessMessage());
+            $('#dk-check-payment-status').prop('disabled', true).hide();
+            try { clearState(); } catch (e) { console.error('Failed to clear state', e); }
+        } else {
+            // Normal flow - auto-check if we already have an invoiceGUID (either in state or URL)
+            if (state.invoiceGUID || getInvoiceRefFromUrl()) {
+                $('#dk-check-payment-status').trigger('click');
+            }
         }
     }
 
@@ -840,12 +1051,12 @@ jQuery(document).ready(function($) {
                         
                         const students = state.students || [];
                         const payeeContact = state.payee ? (state.payee.ax_contact_id || state.payee.ax_contact) : null;
-                        const invoiceID = state.invoiceID || '';
+                        const invoiceID = (typeof state.invoiceID !== 'undefined' && state.invoiceID !== null) ? state.invoiceID : '';
                         
-                        if (!students.length || !invoiceID) {
+                        if (!students.length || invoiceID === '') {
                             console.error('Cannot finalize: missing students or invoiceID', { students, invoiceID });
                             closeProcessModal();
-                            $('#dk-payment-status-message').html('<strong style="color:green;">Payment successful — thank you!</strong><br>Your enrollment is complete.');
+                            $('#dk-payment-status-message').html(generateSuccessMessage());
                             try { clearState(); } catch (e) { console.error('Failed to clear state after paid', e); }
                             $('#dk-check-payment-status').prop('disabled', true).hide();
                             $('#dk-payment-form-container, #dk-external-payment-form').remove();
@@ -869,6 +1080,7 @@ jQuery(document).ready(function($) {
                             params.push('invoiceID=' + encodeURIComponent(invoiceID));
                             params.push('tentative=0');
                             params.push('suppressNotifications=0');
+                            params.push('blockAdminNotification=true');
                             if (payeeContact && payeeContact !== contactID) params.push('payerID=' + encodeURIComponent(payeeContact));
                             if (typeof student.revised_price !== 'undefined' && student.revised_price !== null) params.push('cost=' + encodeURIComponent(parseFloat(student.revised_price).toFixed(2)));
                             if (student.discount_id) params.push('discountIDList=' + encodeURIComponent(student.discount_id));
@@ -894,7 +1106,7 @@ jQuery(document).ready(function($) {
                         finalizeChain.always(function(){
                             console.log('All enrollments finalized');
                             closeProcessModal();
-                            $('#dk-payment-status-message').html('<strong style="color:green;">Payment successful — thank you!</strong><br>Your enrollment has been confirmed. You will receive an email shortly with booking confirmation and invoice/receipt.');
+                            $('#dk-payment-status-message').html(generateSuccessMessage());
                             try { clearState(); } catch (e) { console.error('Failed to clear state after paid', e); }
                             $('#dk-check-payment-status').prop('disabled', true).hide();
                             $('#dk-payment-form-container, #dk-external-payment-form').remove();
@@ -1175,6 +1387,29 @@ jQuery(document).ready(function($) {
         html += '</div>';
 
         $step2.append(html);
+        
+        // Update header with discount info
+        updateCourseHeaderCost();
+        
+        // Add input listener to promo code field to manage Pay Now button state
+        // Disable Pay Now if there's unapplied text in the promo box
+        $('#dk-promo-code').on('input', function(){
+            const currentInput = $(this).val().trim();
+            const appliedPromo = (state.promo && state.promo.code) ? state.promo.code : '';
+            const $payNowBtn = $('#dk-pay-now-btn');
+            const $promoStatus = $('#dk-promo-status');
+            
+            // Disable Pay Now if:
+            // - Input is not empty AND
+            // - Input doesn't match the currently applied promo
+            if (currentInput && currentInput !== appliedPromo) {
+                $payNowBtn.prop('disabled', true).css('opacity', '0.6').attr('title', 'Please click Apply to validate promo code first');
+                $promoStatus.text('Apply your promo code before clicking Pay Now').css('color', '#ff6600');
+            } else {
+                $payNowBtn.prop('disabled', false).css('opacity', '1').attr('title', '');
+                $promoStatus.text('').css('color', '#333');
+            }
+        });
                
 
         // Attach handlers - check if back button should be disabled
@@ -1313,7 +1548,8 @@ jQuery(document).ready(function($) {
                     if (firstAlreadyEnrolled) {
                         // First student already enrolled, skip enrollment and use existing invoice
                         console.debug('First student already enrolled with status:', first.enrollment_status);
-                        if (!state.invoiceID) {
+                        // Check if invoiceID exists (can be 0 for 100% discounts)
+                        if (typeof state.invoiceID === 'undefined' || state.invoiceID === null) {
                             closeProcessModal();
                             showErrorModal('First student is enrolled but invoice ID is missing. Cannot proceed.', function(){
                                 $btn.prop('disabled', false);
@@ -1331,6 +1567,7 @@ jQuery(document).ready(function($) {
                         firstParams.push('contactID=' + encodeURIComponent(firstContact));
                         firstParams.push('tentative=1');
                         firstParams.push('suppressNotifications=1');
+                        firstParams.push('blockAdminNotification=true');
                         // Lock invoice only if this is the only student, otherwise keep open for more students
                         if (students.length === 1) {
                             firstParams.push('lockInvoiceItems=1');
@@ -1349,9 +1586,10 @@ jQuery(document).ready(function($) {
                         proxyEnrol(firstParamsObj).done(function(res){
                             console.debug('proxyEnrol response for first student', res);
                             const payload = unwrap(res);
-                            if (!(payload && payload.INVOICEID)) {
+                            // Check for valid response - INVOICEID can be 0 for 100% discounts, so check for LEARNERID instead
+                            if (!(payload && payload.LEARNERID)) {
                                 closeProcessModal();
-                                showErrorModal('Failed to create invoice for first student. Please try again.', function(){
+                                showErrorModal('Failed to create enrollment for first student. Please try again.', function(){
                                     $btn.prop('disabled', false);
                                 });
                                 console.error('Enrol API returned unexpected result for first student', payload);
@@ -1359,7 +1597,8 @@ jQuery(document).ready(function($) {
                             }
                             
                             // Save enrollment status and learner ID for first student
-                            const invoiceID = payload.INVOICEID;
+                            // INVOICEID may be 0 for 100% discounts - this is expected
+                            const invoiceID = payload.INVOICEID || 0;
                             const learnerID = payload.LEARNERID || null;
                             state.invoiceID = invoiceID;
                             state.students[0].enrollment_status = 'tentative';
@@ -1367,7 +1606,7 @@ jQuery(document).ready(function($) {
                             state.students[0].enrolled_at = Date.now();
                             state.current_flow = 'step2-payment';
                             saveState();
-                            console.debug('First student enrolled: status=tentative, learnerID=', learnerID);
+                            console.debug('First student enrolled: status=tentative, learnerID=', learnerID, 'invoiceID=', invoiceID);
 
                             proceedWithAdditionalStudents();
                         }).fail(function(xhr){
@@ -1428,6 +1667,7 @@ jQuery(document).ready(function($) {
                             params.push('invoiceID=' + encodeURIComponent(invoiceID));
                             params.push('tentative=1');
                             params.push('suppressNotifications=1');
+                            params.push('blockAdminNotification=true');
                             // Lock invoice only on the LAST student that actually needs enrollment
                             if (idx === studentsToEnrol.length - 1) {
                                 params.push('lockInvoiceItems=1');
@@ -1446,7 +1686,8 @@ jQuery(document).ready(function($) {
                                 return proxyEnrol(paramsObj).done(function(r2){
                                     console.debug('proxyEnrol response for additional student', i, r2);
                                     const p2 = unwrap(r2);
-                                    if (!(p2 && (p2.INVOICEID || p2.CONTACTID))) {
+                                    // Check for valid response - INVOICEID can be 0 for 100% discounts, so check for LEARNERID
+                                    if (!(p2 && p2.LEARNERID)) {
                                         console.warn('Enrol for additional student returned unexpected result', i, p2);
                                         enrolFailures.push('Student ' + (i + 1) + ' enrollment returned invalid response');
                                     } else {
@@ -1489,9 +1730,102 @@ jQuery(document).ready(function($) {
                                 return;
                             }
                             
-                            // All students enrolled - proceed to fetch invoice and payment form
-                            updateProcessModal('Tentative enrollments complete. Preparing payment form...');
-                            fetchInvoiceAndPaymentForm();
+                            // All students enrolled - check if invoice total is $0 (100% discount)
+                            const invoiceTotal = calculateInvoiceTotal();
+                            console.debug('Invoice total calculated:', invoiceTotal);
+                            
+                            if (invoiceTotal <= 0) {
+                                // 100% discount - bypass payment and finalize immediately
+                                updateProcessModal('Enrollment is fully discounted. Finalizing booking...');
+                                finalizeEnrollmentsWithoutPayment();
+                            } else {
+                                // Normal flow - proceed to payment
+                                updateProcessModal('Tentative enrollments complete. Preparing payment form...');
+                                fetchInvoiceAndPaymentForm();
+                            }
+                        });
+                    }
+                    
+                    // Helper: Calculate total invoice amount based on student prices
+                    function calculateInvoiceTotal() {
+                        let total = 0;
+                        if (state.students && state.students.length) {
+                            state.students.forEach(function(s){
+                                const price = (typeof s.revised_price !== 'undefined' && s.revised_price !== null) 
+                                    ? parseFloat(s.revised_price) 
+                                    : COURSE_COST_RAW;
+                                total += price;
+                            });
+                        }
+                        return total;
+                    }
+                    
+                    // Finalize enrollments without payment (for 100% discounts)
+                    function finalizeEnrollmentsWithoutPayment() {
+                        const students = state.students || [];
+                        const payeeContact = state.payee ? (state.payee.ax_contact_id || state.payee.ax_contact) : null;
+                        const invoiceID = (typeof state.invoiceID !== 'undefined' && state.invoiceID !== null) ? state.invoiceID : '';
+                        
+                        if (!students.length || invoiceID === '') {
+                            console.error('Cannot finalize: missing students or invoiceID', { students, invoiceID });
+                            closeProcessModal();
+                            showErrorModal('Unable to finalize enrollment. Missing required data.', function(){
+                                $btn.prop('disabled', false);
+                            });
+                            return;
+                        }
+                        
+                        // Build list of students to finalize
+                        const studentsToFinalize = [];
+                        students.forEach(function(student, idx) {
+                            const contactID = student.ax_contact_id || student.ax_contact || 0;
+                            if (!contactID) {
+                                console.warn('Skipping finalization for student without contactID at index', idx);
+                                return;
+                            }
+                            
+                            const params = [];
+                            params.push('instanceID=' + encodeURIComponent(INSTANCE_ID));
+                            params.push('type=w');
+                            params.push('contactID=' + encodeURIComponent(contactID));
+                            params.push('invoiceID=' + encodeURIComponent(invoiceID));
+                            params.push('tentative=0');
+                            params.push('suppressNotifications=0');
+                            params.push('blockAdminNotification=true');
+                            if (payeeContact && payeeContact !== contactID) params.push('payerID=' + encodeURIComponent(payeeContact));
+                            if (typeof student.revised_price !== 'undefined' && student.revised_price !== null) params.push('cost=' + encodeURIComponent(parseFloat(student.revised_price).toFixed(2)));
+                            if (student.discount_id) params.push('discountIDList=' + encodeURIComponent(student.discount_id));
+                            
+                            const paramsObj = {};
+                            params.forEach(function(p){ const parts = p.split('='); paramsObj[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || ''); });
+                            console.debug('Preparing finalization (no payment) for student', idx, paramsObj);
+                            
+                            studentsToFinalize.push({ idx: idx, paramsObj: paramsObj });
+                        });
+                        
+                        // Finalize enrollments sequentially
+                        let finalizeChain = $.Deferred().resolve().promise();
+                        studentsToFinalize.forEach(function(studentData) {
+                            finalizeChain = finalizeChain.then(function() {
+                                console.log('Finalizing enrollment (no payment) for student', studentData.idx);
+                                return proxyEnrol(studentData.paramsObj).fail(function(xhr){
+                                    console.error('Failed to finalize enrollment for student', studentData.idx, xhr && xhr.responseText);
+                                });
+                            });
+                        });
+                        
+                        finalizeChain.always(function(){
+                            console.log('All enrollments finalized (no payment required)');
+                            closeProcessModal();
+                            
+                            // Mark as completed and go to Step 3
+                            state.students.forEach(function(s, i){
+                                state.students[i].enrollment_status = 'confirmed';
+                            });
+                            state.current_flow = 'step3-complete';
+                            saveState();
+                            
+                            goToStep(3);
                         });
                     }
                     
@@ -1726,6 +2060,9 @@ jQuery(document).ready(function($) {
 
         // Apply / Clear promotion code button handler
         $('#dk-apply-promo-btn').off('click').on('click', function(){
+            // Disable Pay Now button immediately while processing
+            $('#dk-pay-now-btn').prop('disabled', true).css('opacity', '0.6');
+            
             // If promo already applied, this button clears it
                 if (state.promo && state.promo.code) {
                     // Clear discounts and promo
@@ -1736,6 +2073,8 @@ jQuery(document).ready(function($) {
                     // persist a transient promo status so renderStep2 can show the cleared message
                     state.promo_status = { text: 'Promotion cleared.', color: '#333' };
                     saveState();
+                    // Re-enable Pay Now before re-render
+                    $('#dk-pay-now-btn').prop('disabled', false).css('opacity', '1');
                     renderStep2();
                     return;
                 }
@@ -1821,6 +2160,8 @@ jQuery(document).ready(function($) {
                     saveState();
                     $('#dk-promo-status').text('Contact sync returned errors. See console.');
                     $('#dk-apply-promo-btn').prop('disabled', false);
+                    // Re-enable Pay Now on error
+                    $('#dk-pay-now-btn').prop('disabled', false).css('opacity', '1');
                     return;
                 }
 
@@ -1873,10 +2214,18 @@ jQuery(document).ready(function($) {
                         $('#dk-promo-status').css('color','red').text(state.promo_status.text);
                     }
                     $('#dk-apply-promo-btn').prop('disabled', false);
+                    // Re-enable Pay Now after processing completes
+                    $('#dk-pay-now-btn').prop('disabled', false).css('opacity', '1');
                     renderStep2();
                 });
 
-            }).fail(function(xhr){ console.error('Contact sync AJAX error', xhr.responseText); alert('Failed to ensure contacts. See console for details.'); });
+            }).fail(function(xhr){ 
+                console.error('Contact sync AJAX error', xhr.responseText); 
+                alert('Failed to ensure contacts. See console for details.'); 
+                // Re-enable Pay Now on AJAX failure
+                $('#dk-pay-now-btn').prop('disabled', false).css('opacity', '1');
+                $('#dk-apply-promo-btn').prop('disabled', false);
+            });
         });
     }
 });

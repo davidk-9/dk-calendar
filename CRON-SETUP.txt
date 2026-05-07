@@ -1,0 +1,69 @@
+========================================
+EXTERNAL CRON SETUP INSTRUCTIONS
+========================================
+
+FILE CHANGED:
+-------------
+- dk-course-calendar.php (added external cron endpoint handler)
+
+
+SETUP STEPS:
+------------
+
+1. Go to WordPress Admin → DK Calendar Settings
+   
+2. In the "Webhook Security" section, you'll see a new field:
+   "Cron Secret Key (for external cron endpoint)"
+   
+3. Generate a secure random key (use a password generator, make it 32+ characters)
+   Example: g7Kp9mN4xR2wQ8vL5yT1zF6hJ3dC0bS9
+   
+4. Save the key in that field and click "Save Settings"
+
+
+CRON URL:
+---------
+Your external cron service should call this URL:
+
+https://lifesavingfirstaid.com.au/wp-admin/admin-ajax.php?action=dk_manual_sync&key=YOUR_SECRET_KEY
+
+Replace YOUR_SECRET_KEY with the actual key you saved in step 3.
+
+
+RECOMMENDED SCHEDULE:
+---------------------
+Run once daily at a time when traffic is low (e.g., 2:00 AM)
+
+
+TESTING:
+--------
+You can test the endpoint by visiting the URL in your browser or using curl:
+
+curl "https://lifesavingfirstaid.com.au/wp-admin/admin-ajax.php?action=dk_manual_sync&key=YOUR_SECRET_KEY"
+
+Expected response on success:
+{"success":true,"data":{"message":"Sync completed successfully","last_sync":"2026-01-13 10:30:45"}}
+
+Expected response on invalid key:
+{"success":false,"data":{"message":"Invalid or missing secret key"}}
+
+
+SECURITY NOTES:
+---------------
+- Keep the secret key private
+- Use HTTPS only (never HTTP)
+- The endpoint requires the exact key match
+- Failed attempts are logged in PHP error_log
+- Successful syncs update the "Last Full Sync" timestamp in settings
+
+
+EXTERNAL CRON SERVICES:
+-----------------------
+Popular options:
+- EasyCron (https://www.easycron.com/)
+- cron-job.org (https://cron-job.org/)
+- Your hosting provider's cPanel cron jobs
+- Server-level crontab (if you have SSH access)
+
+Example crontab entry (runs daily at 2 AM):
+0 2 * * * curl -s "https://lifesavingfirstaid.com.au/wp-admin/admin-ajax.php?action=dk_manual_sync&key=YOUR_SECRET_KEY" > /dev/null 2>&1
