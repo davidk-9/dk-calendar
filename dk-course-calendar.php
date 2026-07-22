@@ -491,6 +491,8 @@ function dk_calendar_render_review_tab() {
     echo '</tbody>';
     echo '</table>';
     // --- END WEBHOOK LOG VIEWER ---
+
+    // (No example payload UI - webhook history table above is sufficient)
 }
 
 // ====================================================================
@@ -704,6 +706,10 @@ function dk_calendar_handle_webhook( $request ) {
     update_option('dk_webhook_log', $new_log, 'no');
     // --- END TEMPORARY LOGGING ---
     
+    // Decode payload
+    $data = json_decode( $raw_payload, true );
+    $event_type = $data['type'] ?? '';
+
     $signature = $request->get_header( 'Ax-Signature' );
     $signature_version = $request->get_header( 'Ax-Signature-Version' );
     $private_key = get_option( 'dk_webhook_private_key' );
@@ -719,33 +725,62 @@ function dk_calendar_handle_webhook( $request ) {
     }
     // --- END SECURITY CHECK ---
 
-    $data = json_decode( $raw_payload, true );
+    // Handle different event types and extract instance id according to payload shape
+    // student.* events contain enrolment.workshop.id
+    if ( in_array( $event_type, array('student.workshop_enrolment_created','student.workshop_enrolment_deleted','student.workshop_enrolment_status_changed'), true ) ) {
+        $instance_id = intval( $data['message']['enrolment']['workshop']['id'] ?? 0 );
+        if ( $instance_id === 0 ) {
+            error_log( 'DK Webhook: Missing instance ID for event: ' . $event_type );
+            return new WP_REST_Response( array( 'message' => 'Invalid payload - missing instance ID.' ), 200 );
+        }
 
-    $event_type = $data['type'] ?? '';
-    $instance_id = intval( $data['message']['enrolment']['workshop']['id'] ?? 0 );
-
-    // Define the events we want to act on
-    $monitored_events = [
-        'student.workshop_enrolment_created', 
-        'student.workshop_enrolment_deleted', 
-        'student.workshop_enrolment_status_changed'
-    ];
-
-    // Check if event is monitored and has valid instance ID
-    if ( ! in_array( $event_type, $monitored_events ) || $instance_id === 0 ) {
-         error_log( 'DK Webhook: Missing instance ID for workshop event: ' . $event_type );
-         return new WP_REST_Response( array( 'message' => 'Invalid payload - missing instance ID.' ), 200 );
+        $success = dk_sync_single_instance( $instance_id );
+        if ( $success ) {
+            return new WP_REST_Response( array( 'message' => 'Status change processed and data refreshed.' ), 200 );
+        } else {
+            error_log('DK Webhook Handler: Single sync failed for instance ID ' . $instance_id);
+            return new WP_REST_Response( array( 'message' => 'Single sync failed.' ), 500 );
+        }
     }
 
-    // Trigger the single instance sync to get the current definitive vacancy count
-    $success = dk_sync_single_instance( $instance_id );
-    
-    if ( $success ) {
-        return new WP_REST_Response( array( 'message' => 'Status change processed and data refreshed.' ), 200 );
-    } else {
-        error_log('DK Webhook Handler: Single sync failed for instance ID ' . $instance_id);
-        return new WP_REST_Response( array( 'message' => 'Single sync failed.' ), 500 );
+    // course.* events contain workshop.id at message.workshop.id
+    if ( in_array( $event_type, array('course.workshop_created','course.workshop_updated'), true ) ) {
+        $instance_id = intval( $data['message']['workshop']['id'] ?? 0 );
+        if ( $instance_id === 0 ) {
+            error_log( 'DK Webhook: Missing instance ID for event: ' . $event_type );
+            return new WP_REST_Response( array( 'message' => 'Invalid payload - missing instance ID.' ), 200 );
+        }
+
+        // Use the existing single-instance sync which will insert/replace the row
+        $success = dk_sync_single_instance( $instance_id );
+        if ( $success ) {
+            return new WP_REST_Response( array( 'message' => 'Instance synced.' ), 200 );
+        } else {
+            error_log('DK Webhook Handler: Single sync failed for instance ID ' . $instance_id . ' (course.* event)');
+            return new WP_REST_Response( array( 'message' => 'Single sync failed.' ), 500 );
+        }
     }
+
+    if ( $event_type === 'course.workshop_deleted' ) {
+        $instance_id = intval( $data['message']['workshop']['id'] ?? 0 );
+        if ( $instance_id === 0 ) {
+            error_log( 'DK Webhook: Missing instance ID for delete event.' );
+            return new WP_REST_Response( array( 'message' => 'Invalid payload - missing instance ID.' ), 200 );
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'dk_course_cache';
+        $deleted = $wpdb->delete( $table_name, array( 'instance_id' => $instance_id ), array( '%d' ) );
+        if ( $deleted === false ) {
+            error_log( 'DK Webhook Handler: Failed to delete instance ID ' . $instance_id );
+            return new WP_REST_Response( array( 'message' => 'Failed to delete instance.' ), 500 );
+        }
+        // Return success even if 0 rows were affected (record may not exist)
+        return new WP_REST_Response( array( 'message' => 'Instance deleted (if existed).' ), 200 );
+    }
+
+    // If we reach here, the event is not one we handle
+    return new WP_REST_Response( array( 'message' => 'Event type not handled.' ), 200 );
 }
 
 
