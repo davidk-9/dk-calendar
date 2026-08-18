@@ -801,14 +801,14 @@ function dk_sync_single_instance( $instance_id ) {
         return false;
     }
 
-    // Use instanceID filter to pull only one specific course instance
-    $base_url = 'https://lifesavingfirstaid.app.axcelerate.com/api/course/instance/search?type=w&displayLength=' . $display_length . '&instanceID=' . absint($instance_id);
-
     $headers = array(
-        'wstoken'  => $wstoken,
-        'apitoken' => $apitoken,
+        'wstoken'      => $wstoken,
+        'apitoken'     => $apitoken,
         'Content-Type' => 'application/json'
     );
+
+    // Initial API URL (standard active / open search)
+    $base_url = 'https://lifesavingfirstaid.app.axcelerate.com/api/course/instance/search?type=w&displayLength=' . $display_length . '&instanceID=' . absint($instance_id);
 
     $response = wp_remote_post( $base_url, array(
         'headers' => $headers,
@@ -830,8 +830,29 @@ function dk_sync_single_instance( $instance_id ) {
 
     $data = json_decode( $body, true );
     
+    // Fallback attempt if response is empty (handles cancelled/inactive/closed workshops)
     if ( ! is_array( $data ) || empty($data) || ! isset($data[0]['INSTANCEID']) ) {
-        error_log( 'DK Single Sync Error: Response body missing course data for ID ' . $instance_id );
+        error_log( 'DK Single Sync Notice: Primary search returned empty for instance ID ' . $instance_id . '. Attempting fallback query for inactive/closed instance...' );
+
+        $fallback_url = $base_url . '&enrolmentOpen=false&isActive=false';
+        
+        $fallback_response = wp_remote_post( $fallback_url, array(
+            'headers' => $headers,
+            'timeout' => 15
+        ) );
+
+        if ( ! is_wp_error( $fallback_response ) && wp_remote_retrieve_response_code( $fallback_response ) === 200 ) {
+            $fallback_body = wp_remote_retrieve_body( $fallback_response );
+            $fallback_data = json_decode( $fallback_body, true );
+            
+            if ( is_array( $fallback_data ) && ! empty( $fallback_data ) && isset( $fallback_data[0]['INSTANCEID'] ) ) {
+                $data = $fallback_data;
+            }
+        }
+    }
+
+    if ( ! is_array( $data ) || empty($data) || ! isset($data[0]['INSTANCEID']) ) {
+        error_log( 'DK Single Sync Error: Response body missing course data for ID ' . $instance_id . ' after fallback attempt.' );
         return false;
     }
 
@@ -841,25 +862,25 @@ function dk_sync_single_instance( $instance_id ) {
     $start_datetime = new DateTime( $course['STARTDATE'] );
 
     $course_data = array(
-        'instance_id' => intval( $course['INSTANCEID'] ),
-        'course_id' => intval( $course['ID'] ),
-        'course_code' => sanitize_text_field( $course['CODE'] ),
-        'course_name' => sanitize_text_field( $course['COURSENAME'] ),
-        'instance_name' => sanitize_text_field( $course['NAME'] ),
-        'location' => sanitize_text_field( $course['LOCATION'] ),
-        'is_public' => isset( $course['PUBLIC'] ) ? (int)$course['PUBLIC'] : 0, 
-        'enrolment_open' => isset( $course['ENROLMENTOPEN'] ) ? (int)$course['ENROLMENTOPEN'] : 0,
+        'instance_id'       => intval( $course['INSTANCEID'] ),
+        'course_id'         => intval( $course['ID'] ),
+        'course_code'       => sanitize_text_field( $course['CODE'] ),
+        'course_name'       => sanitize_text_field( $course['COURSENAME'] ),
+        'instance_name'     => sanitize_text_field( $course['NAME'] ),
+        'location'          => sanitize_text_field( $course['LOCATION'] ),
+        'is_public'         => isset( $course['PUBLIC'] ) ? (int)$course['PUBLIC'] : 0, 
+        'enrolment_open'    => isset( $course['ENROLMENTOPEN'] ) ? (int)$course['ENROLMENTOPEN'] : 0,
         'training_category' => sanitize_text_field( $course['TRAININGCATEGORY'] ),
-        'duration' => sanitize_text_field( $course['DURATION'] ),
-        'state' => sanitize_text_field( $course['STATE'] ),
-        'status' => sanitize_text_field( $course['STATUS'] ),
-        'start_date' => $start_datetime->format( 'Y-m-d' ),
-        'start_time' => $start_datetime->format( 'H:i:s' ),
-        'finish_date' => $course['FINISHDATE'],
-        'max_participants' => intval( $course['MAXPARTICIPANTS'] ),
-        'vacancy' => intval( $course['PARTICIPANTVACANCY'] ),
-        'cost' => floatval( $course['COST'] ),
-        'last_updated' => current_time( 'mysql' ), 
+        'duration'          => sanitize_text_field( $course['DURATION'] ),
+        'state'             => sanitize_text_field( $course['STATE'] ),
+        'status'            => sanitize_text_field( $course['STATUS'] ),
+        'start_date'        => $start_datetime->format( 'Y-m-d' ),
+        'start_time'        => $start_datetime->format( 'H:i:s' ),
+        'finish_date'       => $course['FINISHDATE'],
+        'max_participants'  => intval( $course['MAXPARTICIPANTS'] ),
+        'vacancy'           => intval( $course['PARTICIPANTVACANCY'] ),
+        'cost'              => floatval( $course['COST'] ),
+        'last_updated'      => current_time( 'mysql' ), 
     );
     
     $result = $wpdb->replace( $table_name, $course_data ); 
@@ -869,7 +890,7 @@ function dk_sync_single_instance( $instance_id ) {
         return false;
     }
     
-    error_log( 'DK Single Sync: Successfully updated instance ID ' . $instance_id . ' with current vacancy: ' . $course_data['vacancy'] );
+    error_log( 'DK Single Sync: Successfully updated instance ID ' . $instance_id . ' with status: ' . $course_data['status'] . ' and vacancy: ' . $course_data['vacancy'] );
     return true;
 }
 
